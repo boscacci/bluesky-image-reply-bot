@@ -1,6 +1,6 @@
 ### Bluesky Image Feed (Flask + Bluesky + OpenAI)
 
-A Flask web app and bot that authenticates to Bluesky, fetches posts with images from your home timeline (followed accounts only), downloads media, and exposes a simple API/UI. It also includes an AI reply helper that sends images + context to OpenAI GPT‑4o.
+A Flask web app and bot that authenticates to Bluesky, fetches posts with images from your home timeline (followed accounts only), downloads media, and exposes a simple API/UI. It also includes an AI reply helper that sends images + context to OpenAI GPT‑5.
 
 ### What’s inside
 - Bluesky client with AWS SSM–backed secrets (`src/bluesky_bot.py`)
@@ -29,7 +29,7 @@ python main.py
 - GET `/api/ai-config` — read AI persona/config
 - POST `/api/ai-config` — update persona/config (selected fields)
 - POST `/api/ai-config/reset` — reset persona/config to defaults
-- POST `/api/ai-reply` — generate a witty reply using GPT‑4o for provided images
+- POST `/api/ai-reply` — generate a witty reply using GPT‑5 for provided images
 - GET `/api/posts/stream` — server-sent events stream of progress while fetching
 
 ### Testing

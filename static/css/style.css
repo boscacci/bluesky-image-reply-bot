@@ -88,53 +88,87 @@ body {
     margin-bottom: 0; /* Remove margin since we're using grid gap */
 }
 
-/* Square Post Cards */
+/* Post Cards - Optimized height with more space for images */
 .card {
     display: flex;
     flex-direction: column;
-    aspect-ratio: 1;
-    min-height: 300px;
-    max-height: 400px;
+    height: 400px; /* Fixed height for consistency */
+    border: 1px solid #e9ecef;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
 .card-body {
     flex: 1;
     display: flex;
     flex-direction: column;
-    padding: 1rem;
+    padding: 0;
     overflow: hidden;
 }
 
 .card-text {
-    flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
-    display: -webkit-box;
-    -webkit-line-clamp: 3;
-    line-clamp: 3;
-    -webkit-box-orient: vertical;
+    white-space: nowrap; /* Single line with ellipsis */
     line-height: 1.4;
-    margin-bottom: 0.5rem;
+    margin: 0;
+    padding: 0.5rem 0.75rem; /* Reduced padding */
+    background-color: #f8f9fa;
+    border-top: 1px solid #e9ecef;
+    font-size: 0.9rem; /* Slightly smaller text */
 }
 
 .card-header {
     border-bottom: 1px solid #e9ecef;
     border-radius: 12px 12px 0 0 !important;
+    background-color: #ffffff;
+    padding: 0.6rem 1rem; /* Reduced padding */
 }
 
-/* Image Styling for Square Cards */
+/* Engagement metrics section */
+.engagement-metrics {
+    padding: 0.4rem 0.75rem; /* Reduced padding */
+    background-color: #f8f9fa;
+    border-top: 1px solid #e9ecef;
+    border-radius: 0 0 12px 12px;
+    font-size: 0.8rem; /* Smaller text */
+    color: #6c757d;
+}
+
+.engagement-stats {
+    display: flex;
+    align-items: center;
+}
+
+.engagement-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.8rem;
+    color: #6c757d;
+    transition: color 0.2s ease;
+}
+
+.engagement-item:hover {
+    color: #495057;
+}
+
+.engagement-item i {
+    font-size: 0.75rem;
+}
+
+/* Image Styling - More space for images */
 .image-container {
     position: relative;
     overflow: hidden;
     border-radius: 8px;
-    flex: 1;
-    min-height: 160px;
-    max-height: 260px;
+    flex: 1; /* Take up most of the available space */
+    min-height: 250px;
     margin-bottom: 0.5rem;
     background: #000;
     display: flex;
     align-items: center;
     justify-content: center;
+    pointer-events: auto;
 }
 
 .image-container img {
@@ -142,7 +176,8 @@ body {
     border-radius: 8px;
     width: 100%;
     height: 100%;
-    object-fit: contain; /* show whole image without cropping */
+    object-fit: cover; /* Changed to cover to fill the container better */
+    object-position: center; /* Center the image when cropping is needed */
 }
 
 /* Carousel buttons */
@@ -160,7 +195,9 @@ body {
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    z-index: 2;
+    z-index: 3;
+    pointer-events: auto;
+    transition: all 0.2s ease;
 }
 
 .image-container .carousel-btn.left { left: 8px; }
@@ -168,6 +205,114 @@ body {
 
 .image-container .carousel-btn:hover {
     background: rgba(0, 0, 0, 0.6);
+    transform: translateY(-50%) scale(1.1);
+}
+
+/* Ensure images are clickable and have proper z-index */
+.image-container img {
+    position: relative;
+    z-index: 1;
+    pointer-events: auto;
+}
+
+/* Clickable image styling */
+.clickable-image {
+    transition: all 0.2s ease;
+    user-select: none;
+    position: relative;
+}
+
+.clickable-image:hover {
+    transform: scale(1.02);
+    filter: brightness(1.05);
+}
+
+.clickable-image:active {
+    transform: scale(0.98);
+}
+
+/* Image loading states */
+.clickable-image.loading {
+    background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+    background-size: 200% 100%;
+    animation: loading-shimmer 1.5s infinite;
+    min-height: 200px;
+}
+
+.clickable-image.retrying {
+    background: linear-gradient(90deg, #fff3cd 25%, #ffeaa7 50%, #fff3cd 75%);
+    background-size: 200% 100%;
+    animation: loading-shimmer 1s infinite;
+}
+
+.clickable-image.error {
+    background: #f8d7da;
+    border: 2px dashed #dc3545;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 200px;
+    cursor: not-allowed;
+}
+
+.clickable-image.error::after {
+    content: "⚠️ Failed to load image";
+    color: #721c24;
+    font-size: 0.9rem;
+    text-align: center;
+    padding: 1rem;
+}
+
+.clickable-image.error::before {
+    content: "🔄";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 1.5rem;
+    cursor: pointer;
+    z-index: 10;
+    opacity: 0.7;
+    transition: opacity 0.2s ease;
+}
+
+.clickable-image.error:hover::before {
+    opacity: 1;
+}
+
+.clickable-image.loaded {
+    background: none;
+    animation: none;
+}
+
+/* Loading shimmer animation */
+@keyframes loading-shimmer {
+    0% {
+        background-position: -200% 0;
+    }
+    100% {
+        background-position: 200% 0;
+    }
+}
+
+/* Dark mode image loading states */
+[data-bs-theme="dark"] .clickable-image.loading {
+    background: linear-gradient(90deg, #2d3748 25%, #4a5568 50%, #2d3748 75%);
+    background-size: 200% 100%;
+}
+
+[data-bs-theme="dark"] .clickable-image.retrying {
+    background: linear-gradient(90deg, #744210 25%, #975a16 50%, #744210 75%);
+    background-size: 200% 100%;
+}
+
+[data-bs-theme="dark"] .clickable-image.error {
+    background: #2d1b1b;
+    border-color: #e53e3e;
+}
+
+[data-bs-theme="dark"] .clickable-image.error::after {
+    color: #fed7d7;
 }
 
 .image-container:hover img {
@@ -370,6 +515,46 @@ footer {
     user-select: none;
 }
 
+/* Like button styling */
+.like-button {
+    cursor: pointer !important;
+    transition: all 0.2s ease;
+    border-radius: 4px;
+    padding: 2px 4px;
+}
+
+.like-button:hover {
+    background-color: rgba(220, 53, 69, 0.1);
+    color: #dc3545 !important;
+}
+
+.like-button.liked {
+    color: #dc3545 !important;
+}
+
+.like-button.liked i {
+    color: #dc3545 !important;
+}
+
+.like-button:active {
+    transform: scale(0.95);
+}
+
+.like-button.loading {
+    opacity: 0.6;
+    cursor: not-allowed !important;
+}
+
+.like-button.loading i {
+    animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.5; }
+    100% { opacity: 1; }
+}
+
 .engagement-item i {
     font-size: 0.8rem;
     opacity: 0.8;
@@ -382,6 +567,20 @@ footer {
 
 [data-bs-theme="dark"] .engagement-item i {
     opacity: 0.7;
+}
+
+/* Dark mode like button */
+[data-bs-theme="dark"] .like-button:hover {
+    background-color: rgba(220, 53, 69, 0.2);
+    color: #ff6b7a !important;
+}
+
+[data-bs-theme="dark"] .like-button.liked {
+    color: #ff6b7a !important;
+}
+
+[data-bs-theme="dark"] .like-button.liked i {
+    color: #ff6b7a !important;
 }
 
 /* Avatar styling */
@@ -438,6 +637,7 @@ footer {
     background-color: #1e293b !important;
     border-color: #334155 !important;
     color: #e2e8f0;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
 [data-bs-theme="dark"] .card-header {
@@ -449,6 +649,26 @@ footer {
 [data-bs-theme="dark"] .card-body {
     background-color: #1e293b !important;
     color: #e2e8f0;
+}
+
+[data-bs-theme="dark"] .card-text {
+    background-color: #334155 !important;
+    border-color: #475569 !important;
+    color: #e2e8f0;
+}
+
+[data-bs-theme="dark"] .engagement-metrics {
+    background-color: #334155 !important;
+    border-color: #475569 !important;
+    color: #94a3b8;
+}
+
+[data-bs-theme="dark"] .engagement-item {
+    color: #94a3b8;
+}
+
+[data-bs-theme="dark"] .engagement-item:hover {
+    color: #cbd5e1;
 }
 
 /* Dark mode buttons */

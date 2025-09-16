@@ -14,7 +14,12 @@ from atproto import Client, models
 from PIL import Image
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
+import time
+import hashlib
+from functools import lru_cache
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 try:
     from . import config
 except ImportError:
@@ -29,6 +34,152 @@ class BlueskyBot:
         self.client = None
         self.temp_dir = None
         self.ssm_client = boto3.client('ssm', region_name=config.AWS_REGION)
+        
+        # API optimization components
+        self._timeline_cache = {}  # Cache for timeline data
+        self._cache_ttl = 300  # 5 minutes cache TTL
+        self._last_api_call = 0
+        self._min_api_interval = 0.5  # Minimum 500ms between API calls
+        self._consecutive_errors = 0
+        self._max_consecutive_errors = 3
+        
+        # Setup optimized HTTP session for image downloads
+        self._setup_http_session()
+        
+        # API usage tracking
+        self._api_call_count = 0
+        self._api_call_window_start = time.time()
+        self._max_calls_per_window = 50  # Conservative limit
+        self._window_duration = 300  # 5 minutes
+        
+        # Optimized batch sizes for different operations
+        self._timeline_batch_size = 50  # Increased from 25 for better efficiency
+        self._max_concurrent_downloads = 8  # Optimal for image downloads
+    
+    def _setup_http_session(self):
+        """Setup optimized HTTP session with connection pooling and retry strategy"""
+        self.http_session = requests.Session()
+        
+        # Configure retry strategy
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "OPTIONS"]
+        )
+        
+        # Mount adapter with retry strategy
+        adapter = HTTPAdapter(
+            max_retries=retry_strategy,
+            pool_connections=10,
+            pool_maxsize=20
+        )
+        
+        self.http_session.mount("http://", adapter)
+        self.http_session.mount("https://", adapter)
+        
+        # Set reasonable timeouts
+        self.http_session.timeout = (10, 30)  # (connect, read)
+    
+    def _check_rate_limit(self) -> bool:
+        """Check if we can make an API call without hitting rate limits"""
+        current_time = time.time()
+        
+        # Reset window if needed
+        if current_time - self._api_call_window_start > self._window_duration:
+            self._api_call_count = 0
+            self._api_call_window_start = current_time
+        
+        # Check if we're within rate limits
+        if self._api_call_count >= self._max_calls_per_window:
+            logger.warning(f"Rate limit reached: {self._api_call_count}/{self._max_calls_per_window} calls in window")
+            return False
+        
+        # Check minimum interval between calls
+        time_since_last_call = current_time - self._last_api_call
+        if time_since_last_call < self._min_api_interval:
+            sleep_time = self._min_api_interval - time_since_last_call
+            logger.debug(f"Rate limiting: sleeping for {sleep_time:.2f}s")
+            time.sleep(sleep_time)
+        
+        return True
+    
+    def _record_api_call(self):
+        """Record an API call for rate limiting tracking"""
+        self._api_call_count += 1
+        self._last_api_call = time.time()
+    
+    def _get_cache_key(self, method: str, **kwargs) -> str:
+        """Generate a cache key for API calls"""
+        # Create a deterministic key from method and parameters
+        key_data = f"{method}:{sorted(kwargs.items())}"
+        return hashlib.md5(key_data.encode()).hexdigest()
+    
+    def _is_cache_valid(self, cache_entry: Dict[str, Any]) -> bool:
+        """Check if a cache entry is still valid"""
+        if not cache_entry:
+            return False
+        
+        cache_time = cache_entry.get('timestamp', 0)
+        return time.time() - cache_time < self._cache_ttl
+    
+    def _get_cached_timeline(self, limit: int, cursor: Optional[str] = None, algorithm: str = 'home') -> Optional[Dict[str, Any]]:
+        """Get timeline data from cache if available and valid"""
+        cache_key = self._get_cache_key('get_timeline', limit=limit, cursor=cursor, algorithm=algorithm)
+        cache_entry = self._timeline_cache.get(cache_key)
+        
+        if self._is_cache_valid(cache_entry):
+            logger.debug(f"Cache hit for timeline: {cache_key}")
+            return cache_entry.get('data')
+        
+        return None
+    
+    def _cache_timeline(self, limit: int, cursor: Optional[str] = None, algorithm: str = 'home', data: Any = None):
+        """Cache timeline data"""
+        cache_key = self._get_cache_key('get_timeline', limit=limit, cursor=cursor, algorithm=algorithm)
+        self._timeline_cache[cache_key] = {
+            'data': data,
+            'timestamp': time.time()
+        }
+        
+        # Clean up old cache entries
+        self._cleanup_cache()
+    
+    def _cleanup_cache(self):
+        """Remove expired cache entries"""
+        current_time = time.time()
+        expired_keys = [
+            key for key, entry in self._timeline_cache.items()
+            if current_time - entry.get('timestamp', 0) > self._cache_ttl
+        ]
+        
+        for key in expired_keys:
+            del self._timeline_cache[key]
+        
+        if expired_keys:
+            logger.debug(f"Cleaned up {len(expired_keys)} expired cache entries")
+    
+    def get_api_usage_stats(self) -> Dict[str, Any]:
+        """Get current API usage statistics"""
+        current_time = time.time()
+        window_remaining = max(0, self._window_duration - (current_time - self._api_call_window_start))
+        
+        return {
+            'calls_in_current_window': self._api_call_count,
+            'max_calls_per_window': self._max_calls_per_window,
+            'window_remaining_seconds': window_remaining,
+            'cache_entries': len(self._timeline_cache),
+            'consecutive_errors': self._consecutive_errors,
+            'last_api_call_ago_seconds': current_time - self._last_api_call if self._last_api_call > 0 else None
+        }
+    
+    def reset_api_stats(self):
+        """Reset API usage statistics (useful for testing or after errors)"""
+        self._api_call_count = 0
+        self._api_call_window_start = time.time()
+        self._consecutive_errors = 0
+        self._timeline_cache.clear()
+        logger.info("API usage statistics reset")
         
     def get_ssm_parameter(self, parameter_name: str) -> str:
         """Fetch parameter from AWS SSM Parameter Store with environment variable fallback"""
@@ -64,6 +215,215 @@ class BlueskyBot:
             print(f"Authentication failed: {e}")
             raise
     
+    def _get_post_cid(self, post_uri: str) -> Optional[str]:
+        """Get the CID for a post URI with improved error handling"""
+        try:
+            # Parse the post URI to get the repo and record info
+            uri_parts = post_uri.split('/')
+            if len(uri_parts) < 4:
+                logger.warning(f"Invalid post URI format: {post_uri}")
+                return None
+            
+            repo_did = uri_parts[2]  # The DID part
+            record_key = uri_parts[-1]  # The record key
+            
+            # Check rate limits before making API call
+            if not self._check_rate_limit():
+                logger.warning("Rate limit exceeded while getting post CID")
+                return None
+            
+            # Get the post record to extract the CID
+            post_record = self.client.com.atproto.repo.get_record(
+                params={
+                    "repo": repo_did,
+                    "collection": "app.bsky.feed.post",
+                    "rkey": record_key
+                }
+            )
+            
+            # Record API call for rate limiting
+            self._record_api_call()
+            
+            return post_record.cid
+            
+        except Exception as e:
+            logger.warning(f"Could not get CID for post {post_uri}: {e}")
+            return None
+    
+    def _find_like_record(self, post_uri: str) -> Optional[Any]:
+        """Find the like record for a specific post URI"""
+        try:
+            # Check rate limits before making API call
+            if not self._check_rate_limit():
+                logger.warning("Rate limit exceeded while finding like record")
+                return None
+            
+            # Get the user's likes from their repository with pagination support
+            cursor = None
+            max_attempts = 5  # Limit to prevent infinite loops
+            
+            for attempt in range(max_attempts):
+                params = {"limit": 100}
+                if cursor:
+                    params["cursor"] = cursor
+                
+                likes_response = self.client.com.atproto.repo.list_records(
+                    params={
+                        "repo": self.client.me.did,
+                        "collection": "app.bsky.feed.like",
+                        "limit": params.get("limit", 100),
+                        "cursor": params.get("cursor")
+                    }
+                )
+                
+                # Record API call for rate limiting
+                self._record_api_call()
+                
+                # Find the like record for this specific post
+                for record in likes_response.records:
+                    if hasattr(record.value, 'subject') and record.value.subject.uri == post_uri:
+                        return record
+                
+                # Check if there are more records to search
+                if hasattr(likes_response, 'cursor') and likes_response.cursor:
+                    cursor = likes_response.cursor
+                else:
+                    break
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to find like record for {post_uri}: {e}")
+            return None
+    
+    def like_post(self, post_uri: str) -> Dict[str, Any]:
+        """Like a post using AT protocol with improved error handling and duplicate protection"""
+        try:
+            if not self.client:
+                raise Exception("Not authenticated")
+            
+            # Check rate limits before making API calls
+            if not self._check_rate_limit():
+                return {
+                    "success": False,
+                    "error": "Rate limit exceeded. Please try again later."
+                }
+            
+            # Check if post is already liked to prevent duplicates
+            if self._check_if_post_is_liked(post_uri):
+                logger.info(f"Post {post_uri} is already liked")
+                return {
+                    "success": False,
+                    "error": "Post is already liked",
+                    "already_liked": True
+                }
+            
+            # Get the CID for the post - this is REQUIRED for AT Protocol
+            post_cid = self._get_post_cid(post_uri)
+            if post_cid is None or not post_cid.strip():
+                logger.error(f"Could not retrieve CID for post {post_uri} - CID is required for likes")
+                return {
+                    "success": False,
+                    "error": "Could not retrieve post CID - required for liking posts",
+                    "post_uri": post_uri
+                }
+            
+            # Create a like record using the AT protocol
+            like_record = {
+                "subject": {
+                    "uri": post_uri,
+                    "cid": post_cid
+                },
+                "createdAt": datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+            }
+            
+            # Record API call for rate limiting
+            self._record_api_call()
+            
+            # Use the AT protocol client to create the like record
+            logger.debug(f"Creating like record for post {post_uri} with record: {like_record}")
+            response = self.client.com.atproto.repo.create_record(
+                data={
+                    "repo": self.client.me.did,
+                    "collection": "app.bsky.feed.like",
+                    "record": like_record
+                }
+            )
+            
+            logger.info(f"Successfully liked post: {post_uri}")
+            return {
+                "success": True,
+                "like_uri": response.uri,
+                "message": "Post liked successfully",
+                "post_uri": post_uri
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to like post {post_uri}: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "post_uri": post_uri
+            }
+    
+    def unlike_post(self, post_uri: str) -> Dict[str, Any]:
+        """Unlike a post by finding and deleting the like record with improved error handling"""
+        try:
+            if not self.client:
+                raise Exception("Not authenticated")
+            
+            # Check rate limits before making API calls
+            if not self._check_rate_limit():
+                return {
+                    "success": False,
+                    "error": "Rate limit exceeded. Please try again later."
+                }
+            
+            # Check if post is actually liked first
+            if not self._check_if_post_is_liked(post_uri):
+                logger.info(f"Post {post_uri} is not liked")
+                return {
+                    "success": False,
+                    "error": "Post is not liked",
+                    "not_liked": True
+                }
+            
+            # Find and delete the like record
+            like_record_to_delete = self._find_like_record(post_uri)
+            
+            if not like_record_to_delete:
+                return {
+                    "success": False,
+                    "error": "No like record found for this post"
+                }
+            
+            # Record API call for rate limiting
+            self._record_api_call()
+            
+            # Delete the like record
+            self.client.com.atproto.repo.delete_record(
+                data={
+                    "repo": self.client.me.did,
+                    "collection": "app.bsky.feed.like",
+                    "rkey": like_record_to_delete.uri.split('/')[-1]  # Extract the record key
+                }
+            )
+            
+            logger.info(f"Successfully unliked post: {post_uri}")
+            return {
+                "success": True,
+                "message": "Post unliked successfully",
+                "post_uri": post_uri
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to unlike post {post_uri}: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "post_uri": post_uri
+            }
+    
     def setup_temp_directory(self):
         """Create temporary directory for downloaded images"""
         self.temp_dir = tempfile.mkdtemp(prefix='bluesky_images_')
@@ -71,19 +431,50 @@ class BlueskyBot:
         return self.temp_dir
     
     def download_image(self, url: str, filename: str) -> Optional[str]:
-        """Download image from URL and save to temp directory"""
+        """Download image from URL and save to temp directory using optimized HTTP session"""
         try:
-            response = requests.get(url, timeout=10)
+            # Use the optimized HTTP session with connection pooling and retry
+            response = self.http_session.get(url, timeout=(10, 30), stream=True)
             response.raise_for_status()
             
-            file_path = os.path.join(self.temp_dir, filename)
-            with open(file_path, 'wb') as f:
-                f.write(response.content)
+            # Check content type to ensure it's an image
+            content_type = response.headers.get('content-type', '').lower()
+            if not content_type.startswith('image/'):
+                logger.warning(f"URL {url} does not return an image (content-type: {content_type})")
+                return None
             
-            print(f"Downloaded image: {filename}")
-            return file_path
+            # Check file size to avoid downloading huge files
+            content_length = response.headers.get('content-length')
+            if content_length and int(content_length) > 10 * 1024 * 1024:  # 10MB limit
+                logger.warning(f"Image {url} is too large ({content_length} bytes), skipping")
+                return None
+            
+            file_path = os.path.join(self.temp_dir, filename)
+            
+            # Stream download for better memory usage
+            with open(file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            
+            # Verify the file was created and has content
+            if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                logger.debug(f"Downloaded image: {filename} ({os.path.getsize(file_path)} bytes)")
+                return file_path
+            else:
+                logger.warning(f"Downloaded file {filename} is empty or doesn't exist")
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                return None
+                
+        except requests.exceptions.Timeout:
+            logger.warning(f"Timeout downloading image {url}")
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Request error downloading image {url}: {e}")
+            return None
         except Exception as e:
-            print(f"Failed to download image {url}: {e}")
+            logger.warning(f"Failed to download image {url}: {e}")
             return None
     
     def get_image_info(self, image_path: str) -> Dict[str, Any]:
@@ -156,7 +547,7 @@ URI: {post.post.uri}
                 }, i
 
             results_buffer = [None] * len(embed.images)
-            with ThreadPoolExecutor(max_workers=min(8, len(embed.images))) as executor:
+            with ThreadPoolExecutor(max_workers=min(self._max_concurrent_downloads, len(embed.images))) as executor:
                 futures = [executor.submit(build_image_task, i, image) for i, image in enumerate(embed.images)]
                 for future in as_completed(futures):
                     try:
@@ -217,13 +608,40 @@ URI: {post.post.uri}
         else:
             print("No embedded media found in this post.\n")
     
-    def fetch_timeline(self, limit: int = 10) -> List[models.AppBskyFeedDefs.FeedViewPost]:
-        """Fetch timeline posts from HOME timeline (followed users only)"""
+    def fetch_timeline(self, limit: int = 10, cursor: Optional[str] = None, algorithm: str = 'home') -> List[models.AppBskyFeedDefs.FeedViewPost]:
+        """Fetch timeline posts from HOME timeline (followed users only) with caching and rate limiting"""
         try:
-            timeline = self.client.get_timeline(limit=limit, algorithm='home')
+            # Check cache first
+            cached_data = self._get_cached_timeline(limit, cursor, algorithm)
+            if cached_data:
+                return cached_data.get('feed', [])
+            
+            # Check rate limits before making API call
+            if not self._check_rate_limit():
+                logger.warning("Rate limit exceeded, cannot fetch timeline")
+                return []
+            
+            # Make API call
+            timeline = self.client.get_timeline(limit=limit, cursor=cursor, algorithm=algorithm)
+            self._record_api_call()
+            
+            # Cache the result
+            timeline_data = {
+                'feed': timeline.feed,
+                'cursor': getattr(timeline, 'cursor', None)
+            }
+            self._cache_timeline(limit, cursor, algorithm, timeline_data)
+            
             return timeline.feed
         except Exception as e:
-            print(f"Error fetching timeline: {e}")
+            self._consecutive_errors += 1
+            logger.error(f"Error fetching timeline: {e}")
+            
+            # If we have too many consecutive errors, increase the delay
+            if self._consecutive_errors >= self._max_consecutive_errors:
+                logger.warning(f"Too many consecutive errors ({self._consecutive_errors}), increasing delay")
+                time.sleep(min(5, self._consecutive_errors))
+            
             return []
     
     def fetch_posts_with_images(self, target_count: int = 5, max_fetches: int = 10) -> List[models.AppBskyFeedDefs.FeedViewPost]:
@@ -238,18 +656,20 @@ URI: {post.post.uri}
         
         while len(posts_with_images) < target_count and fetch_count < max_fetches:
             try:
-                # Fetch a batch of posts from HOME timeline (followed users only)
-                if cursor:
-                    timeline = self.client.get_timeline(limit=20, cursor=cursor, algorithm='home')
-                else:
-                    timeline = self.client.get_timeline(limit=20, algorithm='home')
+                # Use the optimized fetch_timeline method with caching and rate limiting
+                timeline_feed = self.fetch_timeline(limit=20, cursor=cursor, algorithm='home')
                 
-                if not timeline.feed:
+                if not timeline_feed:
                     print("No more posts available")
                     break
                 
+                # Get cursor from cache for next iteration
+                cached_data = self._get_cached_timeline(20, cursor, 'home')
+                if cached_data:
+                    cursor = cached_data.get('cursor')
+                
                 # Check each post for images
-                for post in timeline.feed:
+                for post in timeline_feed:
                     if hasattr(post.post.record, 'embed') and post.post.record.embed:
                         embed = post.post.record.embed
                         if hasattr(embed, 'images') and embed.images:
@@ -260,13 +680,19 @@ URI: {post.post.uri}
                                 break
                 
                 # Update cursor for next fetch
-                cursor = timeline.cursor
+                if cached_data and cached_data.get('cursor'):
+                    cursor = cached_data.get('cursor')
+                else:
+                    # If no cursor available, we've reached the end of the timeline
+                    print("📄 Reached end of timeline - no more posts available")
+                    break
+                
                 fetch_count += 1
                 
-                # Be respectful - wait between requests
+                # Be respectful - wait between requests (reduced since we have rate limiting)
                 if len(posts_with_images) < target_count and fetch_count < max_fetches:
-                    print(f"⏳ Waiting 2 seconds before next fetch... (fetch {fetch_count}/{max_fetches})")
-                    time.sleep(2)
+                    print(f"⏳ Waiting 1 second before next fetch... (fetch {fetch_count}/{max_fetches})")
+                    time.sleep(1)
                 
             except Exception as e:
                 print(f"Error fetching posts: {e}")
@@ -282,6 +708,9 @@ URI: {post.post.uri}
         
         embeds = self.process_embeds(post)
         
+        # Check if this post is liked by the current user
+        is_liked = self._check_if_post_is_liked(post.post.uri)
+        
         return {
             'author': {
                 'handle': author.handle,
@@ -294,11 +723,165 @@ URI: {post.post.uri}
                 'indexed_at': post.post.indexed_at if hasattr(post.post, 'indexed_at') else post.post.created_at if hasattr(post.post, 'created_at') else 'Unknown',
                 'reply_count': post.post.reply_count if hasattr(post.post, 'reply_count') else 0,
                 'repost_count': post.post.repost_count if hasattr(post.post, 'repost_count') else 0,
-                'like_count': post.post.like_count if hasattr(post.post, 'like_count') else 0
+                'like_count': post.post.like_count if hasattr(post.post, 'like_count') else 0,
+                'is_liked': is_liked
             },
             'embeds': embeds
         }
     
+    def _check_if_post_is_liked(self, post_uri: str) -> bool:
+        """Check if a post is already liked by the current user with improved efficiency"""
+        try:
+            if not self.client:
+                return False
+            
+            # Use the optimized find_like_record method
+            like_record = self._find_like_record(post_uri)
+            return like_record is not None
+            
+        except Exception as e:
+            logger.warning(f"Could not check like status for post {post_uri}: {e}")
+            return False
+    
+    def refresh_like_status(self, post_uri: str) -> Dict[str, Any]:
+        """Refresh the like status for a specific post"""
+        try:
+            if not self.client:
+                return {
+                    "success": False,
+                    "error": "Not authenticated"
+                }
+            
+            is_liked = self._check_if_post_is_liked(post_uri)
+            
+            return {
+                "success": True,
+                "is_liked": is_liked,
+                "post_uri": post_uri
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to refresh like status for {post_uri}: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "post_uri": post_uri
+            }
+    
+    def fetch_posts_with_images_web_paginated(self, target_count: int = 5, max_fetches: int = 20, max_posts_per_user: int = 2, start_cursor: Optional[str] = None, seen_post_uris: Optional[set] = None) -> Dict[str, Any]:
+        """Fetch posts with images with pagination support - returns new posts and pagination info"""
+        import time
+        
+        # Setup temp directory if not already set
+        if not self.temp_dir:
+            self.temp_dir = self.setup_temp_directory()
+        
+        posts_with_images = []
+        user_post_counts = {}  # Track how many posts we've seen from each user
+        cursor = start_cursor
+        fetch_count = 0
+        total_posts_checked = 0
+        seen_uris = seen_post_uris or set()
+        
+        print(f"🔍 Searching for {target_count} posts with images from FOLLOWED USERS ONLY (max {max_posts_per_user} per user, includes reposts from followed users)...")
+        if start_cursor:
+            print(f"📍 Starting from cursor: {start_cursor[:50]}...")
+        
+        while len(posts_with_images) < target_count and fetch_count < max_fetches:
+            try:
+                # Fetch a batch of posts from HOME timeline (followed users only)
+                # Use the optimized fetch_timeline method with caching and rate limiting
+                timeline_feed = self.fetch_timeline(limit=self._timeline_batch_size, cursor=cursor, algorithm='home')
+                fetch_count += 1  # Always increment fetch count when we attempt to fetch
+                
+                if not timeline_feed:
+                    print("No more posts available in home timeline (followed users)")
+                    break
+                
+                # Get cursor from cache if available
+                cached_data = self._get_cached_timeline(self._timeline_batch_size, cursor, 'home')
+                if cached_data:
+                    cursor = cached_data.get('cursor')
+                
+                # Check each post for images and deduplication
+                for post in timeline_feed:
+                    total_posts_checked += 1
+                    user_handle = post.post.author.handle
+                    post_uri = post.post.uri
+                    
+                    # Skip if we've already seen this post
+                    if post_uri in seen_uris:
+                        print(f"⏭️  Skipping already seen post from {user_handle}")
+                        continue
+                    
+                    # Note: We include reposts from followed users since they appear in our home timeline
+                    if hasattr(post, 'reason') and post.reason:
+                        print(f"🔄 Including repost from {user_handle} (followed user)")
+                    
+                    # Check if we've already seen enough posts from this user
+                    if user_handle in user_post_counts and user_post_counts[user_handle] >= max_posts_per_user:
+                        print(f"⏭️  Skipping post from {user_handle} (already have {user_post_counts[user_handle]} posts)")
+                        continue
+                    
+                    # Check if post has images
+                    has_images = (hasattr(post.post.record, 'embed') and 
+                                post.post.record.embed and 
+                                hasattr(post.post.record.embed, 'images') and 
+                                post.post.record.embed.images)
+                    
+                    if has_images:
+                        try:
+                            formatted_post = self.format_post_for_web(post)
+                            posts_with_images.append(formatted_post)
+                            
+                            # Update user post count and seen URIs
+                            user_post_counts[user_handle] = user_post_counts.get(user_handle, 0) + 1
+                            seen_uris.add(post_uri)
+                            
+                            post_type = "repost" if hasattr(post, 'reason') and post.reason else "original"
+                            print(f"📸 Found {post_type} post with {len(post.post.record.embed.images)} image(s) from {user_handle} ({user_post_counts[user_handle]}/{max_posts_per_user}) - {len(posts_with_images)}/{target_count} total posts")
+                            
+                            if len(posts_with_images) >= target_count:
+                                break
+                                
+                        except Exception as e:
+                            print(f"❌ Error formatting post with images: {e}")
+                            continue
+                    else:
+                        # Skip posts without images
+                        continue
+                
+                # Update cursor for next fetch - get it from the actual timeline response
+                if cached_data and cached_data.get('cursor'):
+                    cursor = cached_data.get('cursor')
+                else:
+                    # If no cursor available, we've reached the end of the timeline
+                    print("📄 Reached end of timeline - no more posts available")
+                    break
+                
+                # Be respectful - wait between requests (reduced since we have rate limiting)
+                if len(posts_with_images) < target_count and fetch_count < max_fetches:
+                    print(f"⏳ Checked {total_posts_checked} posts, found {len(posts_with_images)} with images. Fetching more... (batch {fetch_count}/{max_fetches})")
+                    time.sleep(0.5)  # Reduced wait time due to built-in rate limiting
+                
+            except Exception as e:
+                print(f"Error fetching posts: {e}")
+                break
+        
+        # Print summary of user distribution
+        if user_post_counts:
+            print(f"📊 User distribution: {dict(user_post_counts)}")
+        
+        print(f"✅ Found {len(posts_with_images)} posts with images from FOLLOWED USERS after checking {total_posts_checked} total posts in {fetch_count} batches")
+        
+        return {
+            'posts': posts_with_images,
+            'cursor': cursor,
+            'seen_uris': seen_uris,
+            'total_checked': total_posts_checked,
+            'fetch_count': fetch_count
+        }
+
     def fetch_posts_with_images_web(self, target_count: int = 5, max_fetches: int = 20, max_posts_per_user: int = 2) -> List[Dict[str, Any]]:
         """Fetch posts with images from followed users only (includes reposts from followed users) - Web version"""
         import time
@@ -318,18 +901,20 @@ URI: {post.post.uri}
         while len(posts_with_images) < target_count and fetch_count < max_fetches:
             try:
                 # Fetch a batch of posts from HOME timeline (followed users only)
-                # Use the home timeline which only shows posts from users you follow
-                if cursor:
-                    timeline = self.client.get_timeline(limit=25, cursor=cursor, algorithm='home')
-                else:
-                    timeline = self.client.get_timeline(limit=25, algorithm='home')
+                # Use the optimized fetch_timeline method with caching and rate limiting
+                timeline_feed = self.fetch_timeline(limit=self._timeline_batch_size, cursor=cursor, algorithm='home')
                 
-                if not timeline.feed:
+                if not timeline_feed:
                     print("No more posts available in home timeline (followed users)")
                     break
                 
+                # Get cursor from cache if available
+                cached_data = self._get_cached_timeline(self._timeline_batch_size, cursor, 'home')
+                if cached_data:
+                    cursor = cached_data.get('cursor')
+                
                 # Check each post for images
-                for post in timeline.feed:
+                for post in timeline_feed:
                     total_posts_checked += 1
                     user_handle = post.post.author.handle
                     
@@ -369,14 +954,20 @@ URI: {post.post.uri}
                         # Skip posts without images
                         continue
                 
-                # Update cursor for next fetch
-                cursor = timeline.cursor
+                # Update cursor for next fetch - get it from the actual timeline response
+                # The fetch_timeline method should return the cursor in the cached data
+                if cached_data and cached_data.get('cursor'):
+                    cursor = cached_data.get('cursor')
+                else:
+                    # If no cursor available, we've reached the end of the timeline
+                    print("📄 Reached end of timeline - no more posts available")
+                    break
                 fetch_count += 1
                 
-                # Be respectful - wait between requests
+                # Be respectful - wait between requests (reduced since we have rate limiting)
                 if len(posts_with_images) < target_count and fetch_count < max_fetches:
                     print(f"⏳ Checked {total_posts_checked} posts, found {len(posts_with_images)} with images. Fetching more... (batch {fetch_count}/{max_fetches})")
-                    time.sleep(1)  # Shorter wait for better UX
+                    time.sleep(0.5)  # Reduced wait time due to built-in rate limiting
                 
             except Exception as e:
                 print(f"Error fetching posts: {e}")
@@ -410,19 +1001,22 @@ URI: {post.post.uri}
         while len(posts_with_images) < target_count and fetch_count < max_fetches:
             try:
                 # Fetch a batch of posts from HOME timeline (followed users only)
-                if cursor:
-                    timeline = self.client.get_timeline(limit=25, cursor=cursor, algorithm='home')
-                else:
-                    timeline = self.client.get_timeline(limit=25, algorithm='home')
+                # Use the optimized fetch_timeline method with caching and rate limiting
+                timeline_feed = self.fetch_timeline(limit=self._timeline_batch_size, cursor=cursor, algorithm='home')
                 
-                if not timeline.feed:
+                if not timeline_feed:
                     if progress_callback:
                         progress_callback("No more posts available in home timeline (followed users)", 
                                         posts_found=len(posts_with_images), posts_checked=total_posts_checked, current_batch=fetch_count)
                     break
                 
+                # Get cursor from cache if available
+                cached_data = self._get_cached_timeline(self._timeline_batch_size, cursor, 'home')
+                if cached_data:
+                    cursor = cached_data.get('cursor')
+                
                 # Check each post for images
-                for post in timeline.feed:
+                for post in timeline_feed:
                     total_posts_checked += 1
                     user_handle = post.post.author.handle
                     
@@ -470,16 +1064,23 @@ URI: {post.post.uri}
                         # Skip posts without images
                         continue
                 
-                # Update cursor for next fetch
-                cursor = timeline.cursor
+                # Update cursor for next fetch - get it from the actual timeline response
+                if cached_data and cached_data.get('cursor'):
+                    cursor = cached_data.get('cursor')
+                else:
+                    # If no cursor available, we've reached the end of the timeline
+                    if progress_callback:
+                        progress_callback("📄 Reached end of timeline - no more posts available", 
+                                        posts_found=len(posts_with_images), posts_checked=total_posts_checked, current_batch=fetch_count)
+                    break
                 fetch_count += 1
                 
-                # Be respectful - wait between requests
+                # Be respectful - wait between requests (reduced since we have rate limiting)
                 if len(posts_with_images) < target_count and fetch_count < max_fetches:
                     if progress_callback:
                         progress_callback(f"⏳ Checked {total_posts_checked} posts, found {len(posts_with_images)} with images. Fetching more... (batch {fetch_count}/{max_fetches})", 
                                         posts_found=len(posts_with_images), posts_checked=total_posts_checked, current_batch=fetch_count)
-                    time.sleep(1)  # Shorter wait for better UX
+                    time.sleep(0.5)  # Reduced wait time due to built-in rate limiting
                 
             except Exception as e:
                 if progress_callback:
@@ -524,12 +1125,10 @@ URI: {post.post.uri}
         while len(posts_with_images) < target_count and fetch_count < max_fetches:
             try:
                 # Fetch a batch of posts from HOME timeline (followed users only)
-                if cursor:
-                    timeline = self.client.get_timeline(limit=25, cursor=cursor, algorithm='home')
-                else:
-                    timeline = self.client.get_timeline(limit=25, algorithm='home')
+                # Use the optimized fetch_timeline method with caching and rate limiting
+                timeline_feed = self.fetch_timeline(limit=self._timeline_batch_size, cursor=cursor, algorithm='home')
                 
-                if not timeline.feed:
+                if not timeline_feed:
                     yield {
                         'type': 'progress',
                         'message': "No more posts available in home timeline (followed users)",
@@ -540,8 +1139,13 @@ URI: {post.post.uri}
                     }
                     break
                 
+                # Get cursor from cache if available
+                cached_data = self._get_cached_timeline(self._timeline_batch_size, cursor, 'home')
+                if cached_data:
+                    cursor = cached_data.get('cursor')
+                
                 # Check each post for images
-                for post in timeline.feed:
+                for post in timeline_feed:
                     total_posts_checked += 1
                     user_handle = post.post.author.handle
                     
@@ -609,11 +1213,23 @@ URI: {post.post.uri}
                         # Skip posts without images
                         continue
                 
-                # Update cursor for next fetch
-                cursor = timeline.cursor
+                # Update cursor for next fetch - get it from the actual timeline response
+                if cached_data and cached_data.get('cursor'):
+                    cursor = cached_data.get('cursor')
+                else:
+                    # If no cursor available, we've reached the end of the timeline
+                    yield {
+                        'type': 'progress',
+                        'message': "📄 Reached end of timeline - no more posts available",
+                        'posts_found': len(posts_with_images),
+                        'posts_checked': total_posts_checked,
+                        'current_batch': fetch_count,
+                        'progress_percent': min(100, len(posts_with_images) / target_count * 100)
+                    }
+                    break
                 fetch_count += 1
                 
-                # Be respectful - wait between requests
+                # Be respectful - wait between requests (reduced since we have rate limiting)
                 if len(posts_with_images) < target_count and fetch_count < max_fetches:
                     yield {
                         'type': 'progress',
@@ -623,7 +1239,7 @@ URI: {post.post.uri}
                         'current_batch': fetch_count,
                         'progress_percent': min(100, len(posts_with_images) / target_count * 100)
                     }
-                    time.sleep(1)  # Shorter wait for better UX
+                    time.sleep(0.5)  # Reduced wait time due to built-in rate limiting
                 
             except Exception as e:
                 yield {

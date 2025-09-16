@@ -271,7 +271,7 @@ class AIConfigManager:
 
 
 class OpenAIClient:
-    """OpenAI GPT-5 integration for generating humorous, context-aware replies"""
+    """OpenAI GPT-4o integration for generating humorous, context-aware replies"""
 
     def __init__(self, ssm_parameter_name: str = 'OPENAI_API_KEY_BSKY_BOT'):
         self.ssm_parameter_name = ssm_parameter_name
@@ -362,12 +362,14 @@ class OpenAIClient:
             'Content-Type': 'application/json',
         }
         payload = {
-            "model": "gpt-5",
+            "model": "gpt-4o",
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": content},
             ],
-            "temperature": 0.9,
+            # Dad jokes thrive on a bit of randomness, but not total chaos.
+            # Use a moderate temperature for creativity while maintaining coherence
+            "temperature": 0.8,
             "max_tokens": 120,
         }
 
@@ -465,19 +467,7 @@ def update_location(new_location: str) -> bool:
     return manager.update_location(new_location)
 
 
-def update_sample_replies(new_samples: str) -> bool:
-    """Update the sample replies"""
-    manager = get_ai_config_manager()
-    return manager.update_sample_replies(new_samples)
-
-
 def reset_ai_config() -> bool:
     """Reset AI configuration to defaults"""
     manager = get_ai_config_manager()
     return manager.reset_to_defaults()
-
-
-def update_user_config(persona: str, tone_guidelines: str, location: str, sample_replies: str) -> bool:
-    """Update the user_config.json file with new defaults"""
-    manager = get_ai_config_manager()
-    return manager.update_user_config(persona, tone_guidelines, location, sample_replies)
