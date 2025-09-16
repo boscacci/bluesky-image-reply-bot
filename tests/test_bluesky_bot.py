@@ -13,10 +13,9 @@ import boto3
 import requests
 from PIL import Image
 import sys
-import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 import config
-from bluesky_bot.bluesky_bot import BlueskyBot
+from bluesky_bot import BlueskyBot
 
 
 class TestBlueskyBot:
@@ -34,40 +33,40 @@ class TestBlueskyBot:
             import shutil
             shutil.rmtree(self.temp_dir)
     
-    @patch('bluesky_bot.bluesky_bot.boto3.client')
-    def test_ssm_parameter_retrieval(self, mock_boto_client):
+    def test_ssm_parameter_retrieval(self):
         """Test that we can retrieve the SSM parameter successfully"""
         # Arrange
         mock_ssm = Mock()
-        mock_boto_client.return_value = mock_ssm
         expected_password = "test_password_123"
         mock_ssm.get_parameter.return_value = {
             'Parameter': {'Value': expected_password}
         }
         
-        # Act
-        result = self.bot.get_ssm_parameter('BLUESKY_PASSWORD_BIKELIFE')
-        
-        # Assert
-        assert result == expected_password
-        mock_ssm.get_parameter.assert_called_once_with(
-            Name='BLUESKY_PASSWORD_BIKELIFE',
-            WithDecryption=True
-        )
+        # Patch the SSM client on the bot instance
+        with patch.object(self.bot, 'ssm_client', mock_ssm):
+            # Act
+            result = self.bot.get_ssm_parameter('BLUESKY_PASSWORD_BIKELIFE')
+            
+            # Assert
+            assert result == expected_password
+            mock_ssm.get_parameter.assert_called_once_with(
+                Name='BLUESKY_PASSWORD_BIKELIFE',
+                WithDecryption=True
+            )
     
-    @patch('bluesky_bot.bluesky_bot.boto3.client')
-    def test_ssm_parameter_not_found(self, mock_boto_client):
+    def test_ssm_parameter_not_found(self):
         """Test handling when SSM parameter is not found"""
         # Arrange
         mock_ssm = Mock()
-        mock_boto_client.return_value = mock_ssm
         mock_ssm.get_parameter.side_effect = Exception("ParameterNotFound")
         
-        # Act & Assert
-        with pytest.raises(Exception, match="ParameterNotFound"):
-            self.bot.get_ssm_parameter('NONEXISTENT_PARAM')
+        # Patch the SSM client on the bot instance
+        with patch.object(self.bot, 'ssm_client', mock_ssm):
+            # Act & Assert
+            with pytest.raises(Exception, match="ParameterNotFound"):
+                self.bot.get_ssm_parameter('NONEXISTENT_PARAM')
     
-    @patch('bluesky_bot.bluesky_bot.Client')
+    @patch('bluesky_bot.Client')
     def test_bluesky_authentication_success(self, mock_client_class):
         """Test successful Bluesky authentication"""
         # Arrange
@@ -82,7 +81,7 @@ class TestBlueskyBot:
         mock_client.login.assert_called_once_with('test.bsky.social', 'test_password')
         assert self.bot.client == mock_client
     
-    @patch('bluesky_bot.bluesky_bot.Client')
+    @patch('bluesky_bot.Client')
     def test_bluesky_authentication_failure(self, mock_client_class):
         """Test Bluesky authentication failure"""
         # Arrange
@@ -94,7 +93,7 @@ class TestBlueskyBot:
         with pytest.raises(Exception, match="Authentication failed"):
             self.bot.authenticate('test.bsky.social', 'wrong_password')
     
-    @patch('bluesky_bot.bluesky_bot.Client')
+    @patch('bluesky_bot.Client')
     def test_timeline_fetch_success(self, mock_client_class):
         """Test successful timeline fetching"""
         # Arrange
@@ -141,7 +140,7 @@ class TestBlueskyBot:
         assert os.path.exists(self.bot.temp_dir)
         assert self.bot.temp_dir.startswith('/tmp/bluesky_images_')
     
-    @patch('bluesky_bot.bluesky_bot.requests.get')
+    @patch('bluesky_bot.requests.get')
     def test_download_image_success(self, mock_get):
         """Test successful image download"""
         # Arrange
@@ -159,7 +158,7 @@ class TestBlueskyBot:
         assert result.endswith('test.jpg')
         mock_get.assert_called_once_with('https://example.com/image.jpg', timeout=10)
     
-    @patch('bluesky_bot.bluesky_bot.requests.get')
+    @patch('bluesky_bot.requests.get')
     def test_download_image_failure(self, mock_get):
         """Test image download failure"""
         # Arrange
@@ -218,7 +217,7 @@ class TestBlueskyBot:
         # Assert
         assert result == []
     
-    @patch('bluesky_bot.bluesky_bot.requests.get')
+    @patch('bluesky_bot.requests.get')
     def test_process_embeds_with_images(self, mock_get):
         """Test processing posts with embedded images"""
         # Arrange
@@ -252,8 +251,8 @@ class TestBlueskyBot:
 class TestIntegration:
     """Integration tests that test the full workflow"""
     
-    @patch('bluesky_bot.bluesky_bot.boto3.client')
-    @patch('bluesky_bot.bluesky_bot.Client')
+    @patch('bluesky_bot.boto3.client')
+    @patch('bluesky_bot.Client')
     def test_full_workflow_mock(self, mock_client_class, mock_boto_client):
         """Test the complete workflow with mocked dependencies"""
         # Arrange

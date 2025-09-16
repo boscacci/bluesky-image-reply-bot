@@ -4,7 +4,7 @@
 const AppState = {
     posts: [],
     isLoading: false,
-    currentCount: 9,
+    currentCount: 6,
     lastRefresh: null
 };
 
@@ -98,14 +98,15 @@ const ApiService = {
         return this.request('/api/user');
     },
 
-    async generateMagicResponse(postIndex, imageFilenames, postText, imageAltTexts) {
-        return this.request('/api/magic-response', {
+    async generateAiReply(postIndex, imageFilenames, postText, imageAltTexts, themeConfig) {
+        return this.request('/api/ai-reply', {
             method: 'POST',
             body: JSON.stringify({
                 post_index: postIndex,
                 image_filenames: imageFilenames,
                 post_text: postText,
-                image_alt_texts: imageAltTexts
+                image_alt_texts: imageAltTexts,
+                theme_config: themeConfig
             })
         });
     },
@@ -203,18 +204,32 @@ const UI = {
         return `
             <div class="card mb-4 shadow-sm" data-post-index="${index}">
                 <div class="card-header bg-light">
-                    <div class="d-flex align-items-center justify-content-between">
+                    <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
                         <div>
                             <h6 class="mb-0">${Utils.escapeHtml(post.author.display_name)}</h6>
                             <small class="text-muted">@${Utils.escapeHtml(post.author.handle)}</small>
                         </div>
-                        <small class="text-muted">${postDate}</small>
+                        <div class="d-flex align-items-center gap-2">
+                            <small class="text-muted me-2">${postDate}</small>
+                            ${images.length > 0 ? `
+                                <button class="btn btn-outline-success btn-sm ai-reply-btn" 
+                                        onclick="UI.generateAiReply(${index})" 
+                                        title="Generate themed AI reply"
+                                        data-post-index="${index}">
+                                    <i class="fas fa-robot"></i> AI Reply
+                                </button>
+                            ` : ''}
+                            <a href="https://bsky.app/profile/${post.author.handle}/post/${post.post.uri.split('/').pop()}" 
+                               target="_blank" class="btn btn-outline-primary btn-sm" title="View on Bluesky">
+                                <i class="fas fa-external-link-alt"></i> View on Bluesky
+                            </a>
+                        </div>
                     </div>
                 </div>
                 <div class="card-body">
                     <p class="card-text">${Utils.escapeHtml(post.post.text).replace(/\n/g, '<br>')}</p>
                     
-                    ${images.length > 0 ? this.createImagesSection(images) : ''}
+                    ${images.length > 0 ? this.createImagesSection(images, index) : ''}
                     
                     <div class="d-flex justify-content-between align-items-center mt-auto">
                         <div class="engagement-stats">
@@ -228,20 +243,7 @@ const UI = {
                                 <i class="fas fa-heart"></i> ${post.post.like_count}
                             </span>
                         </div>
-                        <div class="d-flex gap-2">
-                            ${images.length > 0 ? `
-                                <button class="btn btn-outline-warning btn-sm magic-btn" 
-                                        onclick="UI.generateMagicResponse(${index})" 
-                                        title="Generate smart AI reply to images and post content"
-                                        data-post-index="${index}">
-                                    <i class="fas fa-brain"></i> Smart Reply
-                                </button>
-                            ` : ''}
-                            <a href="https://bsky.app/profile/${post.author.handle}/post/${post.post.uri.split('/').pop()}" 
-                               target="_blank" class="btn btn-outline-primary btn-sm" title="View on Bluesky">
-                                <i class="fas fa-external-link-alt"></i> View on Bluesky
-                            </a>
-                        </div>
+                        
                     </div>
                 </div>
             </div>
@@ -249,7 +251,7 @@ const UI = {
     },
 
     // Create images section HTML
-    createImagesSection: function(images) {
+    createImagesSection: function(images, postIndex) {
         const colClass = images.length === 1 ? '12' : images.length === 2 ? '6' : '4';
         
         return `
@@ -264,6 +266,14 @@ const UI = {
                                  style="cursor: pointer;"
                                  loading="lazy">
                             ${image.alt_text ? `<small class="text-muted d-block mt-1">${Utils.escapeHtml(image.alt_text)}</small>` : ''}
+                            <div class="smart-caption-container mt-2" id="caption-${postIndex}" style="display: none;">
+                                <div class="smart-caption p-2 bg-info bg-opacity-10 rounded border-start border-info border-3">
+                                    <small class="text-info fw-bold">
+                                        <i class="fas fa-robot me-1"></i>AI Caption:
+                                    </small>
+                                    <div class="smart-caption-text mt-1"></div>
+                                </div>
+                            </div>
                             <small class="text-muted d-block">
                                 ${image.info.width}×${image.info.height} • 
                                 ${Utils.formatFileSize(image.info.file_size)}
@@ -304,6 +314,9 @@ const UI = {
             emptyState.style.display = 'block';
             return;
         }
+        
+        // Store posts in AppState for AI Reply functionality
+        AppState.posts = posts;
         
         // Clear container
         postsContainer.innerHTML = '';
@@ -357,8 +370,8 @@ const UI = {
         bsModal.show();
     },
 
-    // Generate magic response for a post
-    generateMagicResponse: async function(postIndex) {
+    // Generate AI reply for a post
+    generateAiReply: async function(postIndex) {
         const post = AppState.posts[postIndex];
         if (!post) {
             console.error('Post not found for index:', postIndex);
@@ -371,51 +384,54 @@ const UI = {
             return;
         }
 
-        const magicBtn = document.querySelector(`[data-post-index="${postIndex}"]`);
-        if (!magicBtn) {
-            console.error('Magic button not found for post:', postIndex);
+        const aiReplyBtn = document.querySelector(`[data-post-index="${postIndex}"].ai-reply-btn`);
+        if (!aiReplyBtn) {
+            console.error('AI reply button not found for post:', postIndex);
             return;
         }
 
         // Show loading state
-        const originalContent = magicBtn.innerHTML;
-        magicBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Thinking...';
-        magicBtn.disabled = true;
+        const originalContent = aiReplyBtn.innerHTML;
+        aiReplyBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Thinking...';
+        aiReplyBtn.disabled = true;
 
         try {
             const imageFilenames = images.map(img => img.filename);
             const imageAltTexts = images.map(img => img.alt_text || '');
             const postText = post.post.text || '';
             
-            const response = await ApiService.generateMagicResponse(postIndex, imageFilenames, postText, imageAltTexts);
+            // Get current theme configuration
+            const themeConfig = JSON.parse(localStorage.getItem('aiThemeConfig') || '{"theme": "cycling", "tone": "enthusiastic", "style": "conversational"}');
             
-            // Show the smart reply in a modal
-            this.showMagicResponseModal(response.magic_response, post, images);
+            const response = await ApiService.generateAiReply(postIndex, imageFilenames, postText, imageAltTexts, themeConfig);
+            
+            // Show the AI reply in a modal
+            this.showAiReplyModal(response.ai_reply, post, images);
             
         } catch (error) {
-            console.error('Error generating magic response:', error);
-            this.showError('Failed to generate magic response: ' + error.message);
+            console.error('Error generating AI reply:', error);
+            this.showError('Failed to generate AI reply: ' + error.message);
         } finally {
             // Restore button state
-            magicBtn.innerHTML = originalContent;
-            magicBtn.disabled = false;
+            aiReplyBtn.innerHTML = originalContent;
+            aiReplyBtn.disabled = false;
         }
     },
 
-    // Show magic response modal
-    showMagicResponseModal: function(magicResponse, post, images) {
+    // Show AI reply modal
+    showAiReplyModal: function(aiReply, post, images) {
         // Create modal if it doesn't exist
-        let modal = document.getElementById('magicResponseModal');
+        let modal = document.getElementById('aiReplyModal');
         if (!modal) {
             modal = document.createElement('div');
-            modal.id = 'magicResponseModal';
+            modal.id = 'aiReplyModal';
             modal.className = 'modal fade';
             modal.innerHTML = `
                 <div class="modal-dialog modal-lg modal-dialog-centered">
                     <div class="modal-content">
                         <div class="modal-header">
                             <h5 class="modal-title">
-                                <i class="fas fa-brain me-2"></i>AI Smart Reply
+                                <i class="fas fa-robot me-2"></i>Themed AI Reply
                             </h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
@@ -424,19 +440,19 @@ const UI = {
                                 <h6 class="text-muted">Original Post by @${Utils.escapeHtml(post.author.handle)}</h6>
                                 <p class="small text-muted">${Utils.escapeHtml(post.post.text)}</p>
                             </div>
-                            <div class="magic-response-content">
-                                <h6 class="text-warning mb-3">
-                                    <i class="fas fa-brain me-2"></i>Smart AI Reply:
+                            <div class="ai-reply-content">
+                                <h6 class="text-success mb-3">
+                                    <i class="fas fa-robot me-2"></i>Themed AI Reply:
                                 </h6>
-                                <div class="magic-response-text p-3 bg-light rounded">
-                                    <p class="mb-0" id="magicResponseText"></p>
+                                <div class="ai-reply-text p-3 bg-light rounded">
+                                    <p class="mb-0" id="aiReplyText"></p>
                                 </div>
                             </div>
                         </div>
                         <div class="modal-footer">
                             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                            <button type="button" class="btn btn-warning" onclick="UI.copyMagicResponse()">
-                                <i class="fas fa-copy"></i> Copy Response
+                            <button type="button" class="btn btn-success" onclick="UI.copyAiReply()">
+                                <i class="fas fa-copy"></i> Copy Reply
                             </button>
                         </div>
                     </div>
@@ -445,34 +461,31 @@ const UI = {
             document.body.appendChild(modal);
         }
         
-        // Set the magic response text
-        document.getElementById('magicResponseText').textContent = magicResponse;
+        // Set the AI reply text
+        document.getElementById('aiReplyText').textContent = aiReply;
         
         const bsModal = new bootstrap.Modal(modal);
         bsModal.show();
     },
 
-    // Copy magic response to clipboard
-    copyMagicResponse: function() {
-        const responseText = document.getElementById('magicResponseText').textContent;
-        navigator.clipboard.writeText(responseText).then(() => {
+    // Copy AI reply to clipboard
+    copyAiReply: function() {
+        const replyText = document.getElementById('aiReplyText').textContent;
+        navigator.clipboard.writeText(replyText).then(() => {
             // Show success feedback
-            const copyBtn = document.querySelector('#magicResponseModal .btn-warning');
+            const copyBtn = document.querySelector('#aiReplyModal .btn-success');
             const originalText = copyBtn.innerHTML;
             copyBtn.innerHTML = '<i class="fas fa-check"></i> Copied!';
-            copyBtn.classList.remove('btn-warning');
-            copyBtn.classList.add('btn-success');
             
             setTimeout(() => {
                 copyBtn.innerHTML = originalText;
-                copyBtn.classList.remove('btn-success');
-                copyBtn.classList.add('btn-warning');
             }, 2000);
         }).catch(err => {
             console.error('Failed to copy text: ', err);
             this.showError('Failed to copy response to clipboard');
         });
-    }
+    },
+
 };
 
 // Main app controller

@@ -11,11 +11,11 @@ from unittest.mock import Mock, patch, MagicMock
 import sys
 
 # Add the src directory to the Python path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'bluesky_bot'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 # Import the Flask app
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from app import BlueskyWebBot
+from bluesky_bot import BlueskyBot
 
 
 class TestUserLimiting:
@@ -23,7 +23,7 @@ class TestUserLimiting:
     
     def setup_method(self):
         """Set up test fixtures before each test method"""
-        self.bot = BlueskyWebBot()
+        self.bot = BlueskyBot()
         self.temp_dir = tempfile.mkdtemp()
         self.bot.temp_dir = self.temp_dir
     

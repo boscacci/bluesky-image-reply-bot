@@ -15,7 +15,10 @@ from PIL import Image
 import json
 import logging
 from datetime import datetime
-import config
+try:
+    from . import config
+except ImportError:
+    import config
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -699,11 +702,4 @@ URI: {post.post.uri}
                 print("   (Files will be cleaned up automatically by the system)")
 
 
-def main():
-    """Main entry point"""
-    bot = BlueskyBot()
-    bot.run(config.BLUESKY_HANDLE, limit=config.DEFAULT_TIMELINE_LIMIT)
-
-
-if __name__ == "__main__":
-    main()
+# CLI functionality removed - this is now a web-only application

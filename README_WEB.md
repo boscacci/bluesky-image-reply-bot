@@ -57,11 +57,7 @@ BLUESKY_HANDLE = 'your-handle.bsky.social'
 
 ### 5. Run the Web App
 
-```bash
-python run.py
-```
-
-Or run directly:
+Run the application:
 
 ```bash
 python app.py

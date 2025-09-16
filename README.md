@@ -31,6 +31,29 @@ A beautiful, modern Flask web application that fetches and displays posts with i
 - ✅ **Responsive Design**: Mobile-friendly responsive layout
 - ✅ **Accessibility**: Proper ARIA labels and semantic HTML
 
+## 📁 Project Structure
+
+```
+vit-sandbox/
+├── src/                    # Source code
+│   ├── app.py             # Main Flask application
+│   ├── config.py          # Configuration imports
+│   ├── bluesky_bot/       # Bluesky bot implementation
+│   ├── staged_vision_integration.py  # AI model integration
+│   └── theme_config.py    # Theme configuration
+├── tests/                  # Test files
+│   ├── test_flask_app.py  # Flask app tests
+│   ├── test_bluesky_bot.py # Bot tests
+│   ├── test_model_caching.py # Model caching tests
+│   └── test_cache_config.py # Cache config tests
+├── static/                 # Static web assets
+├── templates/              # HTML templates
+├── docs/                   # Documentation
+├── main.py                 # Main entry point
+├── requirements.txt        # Python dependencies
+└── README.md              # This file
+```
+
 ## 🛠️ Installation
 
 1. **Clone the repository**
@@ -51,7 +74,7 @@ A beautiful, modern Flask web application that fetches and displays posts with i
 
 4. **Run the application**
    ```bash
-   python app.py
+   python main.py
    ```
 
 ## 📡 API Endpoints

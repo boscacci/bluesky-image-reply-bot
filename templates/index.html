@@ -29,11 +29,8 @@
                     <i class="fas fa-keyboard"></i>
                 </button>
                 <div class="btn-group ms-2" role="group">
-                    <input type="radio" class="btn-check" name="postCount" id="count6" value="6">
+                    <input type="radio" class="btn-check" name="postCount" id="count6" value="6" checked>
                     <label class="btn btn-outline-secondary" for="count6">6</label>
-                    
-                    <input type="radio" class="btn-check" name="postCount" id="count9" value="9" checked>
-                    <label class="btn btn-outline-secondary" for="count9">9</label>
                     
                     <input type="radio" class="btn-check" name="postCount" id="count18" value="18">
                     <label class="btn btn-outline-secondary" for="count18">18</label>
@@ -42,6 +39,9 @@
                     <input type="radio" class="btn-check" name="maxPerUser" id="max1" value="1" checked>
                     <label class="btn btn-outline-info" for="max1">1/user</label>
                 </div>
+                <button class="btn btn-outline-warning ms-2" onclick="showThemeConfig()" title="Configure AI reply themes">
+                    <i class="fas fa-palette"></i> AI Themes
+                </button>
             </div>
         </div>
 
@@ -87,6 +87,98 @@
             <i class="fas fa-images fa-3x text-muted mb-3"></i>
             <h3 class="text-muted">No posts with images found</h3>
             <p class="text-muted">The app searches through posts from users you follow for images (includes reposts from followed users). Try refreshing or check your Bluesky connection.</p>
+        </div>
+    </div>
+</div>
+
+<!-- Theme Configuration Modal -->
+<div class="modal fade" id="themeConfigModal" tabindex="-1" aria-labelledby="themeConfigModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="themeConfigModalLabel">
+                    <i class="fas fa-palette me-2"></i>AI Reply Theme Configuration
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <h6 class="mb-3">Theme</h6>
+                        <div class="mb-3">
+                            <select class="form-select" id="themeSelect">
+                                <option value="cycling">🚲 Cycling & Accessibility</option>
+                                <option value="environment">🌱 Environment & Sustainability</option>
+                                <option value="technology">💻 Technology & Innovation</option>
+                                <option value="community">🤝 Community & Engagement</option>
+                            </select>
+                            <div class="form-text">Choose the main theme for AI replies</div>
+                        </div>
+                        
+                        <h6 class="mb-3">Tone</h6>
+                        <div class="mb-3">
+                            <select class="form-select" id="toneSelect">
+                                <option value="enthusiastic">😊 Enthusiastic & Energetic</option>
+                                <option value="professional">💼 Professional & Informative</option>
+                                <option value="casual">😎 Casual & Friendly</option>
+                                <option value="humorous">😄 Light-hearted & Witty</option>
+                            </select>
+                            <div class="form-text">Choose the tone of voice for AI replies</div>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-6">
+                        <h6 class="mb-3">Style</h6>
+                        <div class="mb-3">
+                            <select class="form-select" id="styleSelect">
+                                <option value="conversational">💬 Conversational & Natural</option>
+                                <option value="formal">📝 Formal & Polished</option>
+                                <option value="brief">⚡ Brief & Concise</option>
+                            </select>
+                            <div class="form-text">Choose the writing style for AI replies</div>
+                        </div>
+                        
+                        <h6 class="mb-3">Preview</h6>
+                        <div class="p-3 bg-light rounded" id="themePreview">
+                            <small class="text-muted">Select options above to see a preview of the AI reply style</small>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="mt-4">
+                    <h6 class="mb-3">Current Configuration</h6>
+                    <div class="row">
+                        <div class="col-md-4">
+                            <div class="card">
+                                <div class="card-body text-center">
+                                    <h6 class="card-title">Theme</h6>
+                                    <span class="badge bg-primary" id="currentTheme">Cycling</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="card">
+                                <div class="card-body text-center">
+                                    <h6 class="card-title">Tone</h6>
+                                    <span class="badge bg-success" id="currentTone">Enthusiastic</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="card">
+                                <div class="card-body text-center">
+                                    <h6 class="card-title">Style</h6>
+                                    <span class="badge bg-info" id="currentStyle">Conversational</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="saveThemeConfig()">Save Configuration</button>
+            </div>
         </div>
     </div>
 </div>
@@ -192,5 +284,129 @@ function showKeyboardShortcuts() {
     const bsModal = new bootstrap.Modal(modal);
     bsModal.show();
 }
+
+// Theme configuration functions
+function showThemeConfig() {
+    // Load current theme configuration
+    loadCurrentThemeConfig();
+    
+    // Add event listeners for live preview
+    document.getElementById('themeSelect').addEventListener('change', updateThemePreview);
+    document.getElementById('toneSelect').addEventListener('change', updateThemePreview);
+    document.getElementById('styleSelect').addEventListener('change', updateThemePreview);
+    
+    const modal = new bootstrap.Modal(document.getElementById('themeConfigModal'));
+    modal.show();
+}
+
+function loadCurrentThemeConfig() {
+    // Load from localStorage or use defaults
+    const currentConfig = JSON.parse(localStorage.getItem('aiThemeConfig') || '{"theme": "cycling", "tone": "enthusiastic", "style": "conversational"}');
+    
+    document.getElementById('themeSelect').value = currentConfig.theme;
+    document.getElementById('toneSelect').value = currentConfig.tone;
+    document.getElementById('styleSelect').value = currentConfig.style;
+    
+    updateCurrentConfigDisplay(currentConfig);
+    updateThemePreview();
+}
+
+function updateCurrentConfigDisplay(config) {
+    const themeLabels = {
+        'cycling': 'Cycling',
+        'environment': 'Environment',
+        'technology': 'Technology',
+        'community': 'Community'
+    };
+    
+    const toneLabels = {
+        'enthusiastic': 'Enthusiastic',
+        'professional': 'Professional',
+        'casual': 'Casual',
+        'humorous': 'Humorous'
+    };
+    
+    const styleLabels = {
+        'conversational': 'Conversational',
+        'formal': 'Formal',
+        'brief': 'Brief'
+    };
+    
+    document.getElementById('currentTheme').textContent = themeLabels[config.theme] || 'Cycling';
+    document.getElementById('currentTone').textContent = toneLabels[config.tone] || 'Enthusiastic';
+    document.getElementById('currentStyle').textContent = styleLabels[config.style] || 'Conversational';
+}
+
+function updateThemePreview() {
+    const theme = document.getElementById('themeSelect').value;
+    const tone = document.getElementById('toneSelect').value;
+    const style = document.getElementById('styleSelect').value;
+    
+    const previews = {
+        'cycling': {
+            'enthusiastic': 'This is exactly the kind of cycling infrastructure we need! Safe, accessible design benefits everyone in our community 🚲♿',
+            'professional': 'This cycling infrastructure demonstrates excellent urban planning principles that prioritize safety and accessibility for all users.',
+            'casual': 'Nice bike infrastructure! This is how we make cities more livable for everyone 🚴‍♀️',
+            'humorous': 'Finally, bike lanes that don\'t disappear into thin air! This is infrastructure that actually works 🚲✨'
+        },
+        'environment': {
+            'enthusiastic': 'This is exactly the kind of environmental progress we need! Every step toward sustainability makes a difference 🌱',
+            'professional': 'This initiative demonstrates effective environmental stewardship and sustainable practices that benefit our ecosystem.',
+            'casual': 'Love seeing environmental action in practice! This is how we protect our planet 🌍',
+            'humorous': 'Mother Nature is definitely giving this a thumbs up! Great environmental initiative 🌿👍'
+        },
+        'technology': {
+            'enthusiastic': 'This is exactly the kind of innovation we need! Technology that makes life better for everyone 💻',
+            'professional': 'This technological solution demonstrates effective implementation of digital tools that enhance user experience.',
+            'casual': 'Cool tech! This is how innovation should work - making things better for people 🤖',
+            'humorous': 'Finally, technology that doesn\'t make you want to throw your computer out the window! 🖥️✨'
+        },
+        'community': {
+            'enthusiastic': 'This is exactly the kind of community spirit we need! Connection and support make neighborhoods stronger 🤝',
+            'professional': 'This community initiative demonstrates effective social engagement and neighborhood development strategies.',
+            'casual': 'Love seeing community building in action! This is how neighborhoods thrive 🏘️',
+            'humorous': 'This is what happens when neighbors actually talk to each other - magic! 🏠✨'
+        }
+    };
+    
+    const preview = previews[theme]?.[tone] || 'This is a great example of positive community action!';
+    document.getElementById('themePreview').innerHTML = `<em>"${preview}"</em>`;
+}
+
+function saveThemeConfig() {
+    const config = {
+        theme: document.getElementById('themeSelect').value,
+        tone: document.getElementById('toneSelect').value,
+        style: document.getElementById('styleSelect').value
+    };
+    
+    // Save to localStorage
+    localStorage.setItem('aiThemeConfig', JSON.stringify(config));
+    
+    // Update current config display
+    updateCurrentConfigDisplay(config);
+    
+    // Close modal
+    const modal = bootstrap.Modal.getInstance(document.getElementById('themeConfigModal'));
+    modal.hide();
+    
+    // Show success message
+    showSuccessMessage('AI theme configuration saved successfully!');
+}
+
+function showSuccessMessage(message) {
+    const successAlert = document.getElementById('success-alert');
+    const successMessage = document.getElementById('success-message');
+    successMessage.textContent = message;
+    successAlert.style.display = 'block';
+    
+    setTimeout(() => {
+        successAlert.style.display = 'none';
+    }, 3000);
+}
+
+// Make functions globally available
+window.showThemeConfig = showThemeConfig;
+window.saveThemeConfig = saveThemeConfig;
 </script>
 {% endblock %}

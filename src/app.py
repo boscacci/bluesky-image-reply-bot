@@ -18,27 +18,31 @@ from flask import Flask, render_template, jsonify, send_file, request, Response
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-import sys
-import os
-import base64
-import io
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
-from bluesky_bot.bluesky_bot import BlueskyBot
-from qwen_vl_integration import generate_qwen_response
-import config
+try:
+    from .bluesky_bot import BlueskyBot
+    from .theme_config import get_available_themes
+    from .openai_integration import generate_openai_ai_reply
+    from . import config
+except ImportError:
+    from bluesky_bot import BlueskyBot
+    from theme_config import get_available_themes
+    from openai_integration import generate_openai_ai_reply
+    import config
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('bluesky_app.log'),
+        logging.FileHandler(os.path.join(os.path.dirname(__file__), '..', 'bluesky_app.log')),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
+app = Flask(__name__, 
+           template_folder=os.path.join(os.path.dirname(__file__), '..', 'templates'),
+           static_folder=os.path.join(os.path.dirname(__file__), '..', 'static'))
 CORS(app)
 
 # Configure rate limiting
@@ -51,6 +55,7 @@ limiter.init_app(app)
 # Global variables for the bot instance
 bluesky_bot = None
 temp_dir = None
+_models_preloaded = False  # Deprecated, retained for backward compatibility only
 
 # Initialize the bot
 def init_bot():
@@ -61,6 +66,10 @@ def init_bot():
             temp_dir = bluesky_bot.temp_dir
             return True
     return bluesky_bot is not None
+
+# Removed local model initialization; using OpenAI API instead
+def init_models():
+    return False
 
 @app.route('/')
 def index():
@@ -172,6 +181,21 @@ def user_info():
         logger.error(f"Error getting user info: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/themes')
+def get_themes():
+    """API endpoint to get available AI reply themes"""
+    try:
+        themes = get_available_themes()
+        return jsonify({
+            'success': True,
+            'themes': themes
+        })
+    except Exception as e:
+        logger.error(f"Error getting themes: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# Removed endpoints related to local model lifecycle
+
 @app.route('/api/posts/stream')
 @limiter.limit("5 per minute")
 def get_posts_stream():
@@ -221,10 +245,10 @@ def get_posts_stream():
         logger.error(f"Error in get_posts_stream: {e}")
         return jsonify({'error': f'Failed to fetch posts: {str(e)}'}), 500
 
-@app.route('/api/magic-response', methods=['POST'])
+@app.route('/api/ai-reply', methods=['POST'])
 @limiter.limit("10 per minute")
-def generate_magic_response():
-    """API endpoint to generate witty AI responses to images using Qwen-VL-chat-7B"""
+def generate_ai_reply():
+    """API endpoint to generate a witty AI reply using OpenAI GPT-4o (single call)."""
     try:
         data = request.get_json()
         if not data:
@@ -234,6 +258,7 @@ def generate_magic_response():
         image_filenames = data.get('image_filenames', [])
         post_text = data.get('post_text', '')
         image_alt_texts = data.get('image_alt_texts', [])
+        theme_config = data.get('theme_config', {})
         
         if post_index is None:
             return jsonify({'error': 'post_index is required'}), 400
@@ -277,20 +302,18 @@ def generate_magic_response():
             'image_count': len(image_paths)
         }
         
-        logger.info(f"Generating smart reply with context: post_text='{post_text[:100]}...', alt_texts={image_alt_texts}")
-        
-        # Generate smart reply using Qwen-VL-chat-7B with enhanced context
-        magic_response = generate_qwen_response(image_paths, enhanced_context)
+        logger.info(f"Generating OpenAI GPT-4o reply with context: post_text='{post_text[:100]}...', alt_texts={image_alt_texts}")
+        ai_reply = generate_openai_ai_reply(image_paths, enhanced_context, theme_config)
         
         return jsonify({
             'success': True,
-            'magic_response': magic_response,
+            'ai_reply': ai_reply,
             'images_processed': len(image_paths)
         })
         
     except Exception as e:
-        logger.error(f"Error in generate_magic_response: {e}")
-        return jsonify({'error': f'Failed to generate magic response: {str(e)}'}), 500
+        logger.error(f"Error in generate_ai_reply: {e}")
+        return jsonify({'error': f'Failed to generate AI reply: {str(e)}'}), 500
 
 
 @app.route('/health')
@@ -302,5 +325,4 @@ def health_check():
         'service': 'bluesky-custom-feed-followed-users'
     })
 
-if __name__ == '__main__':
-    app.run(debug=config.FLASK_DEBUG, host=config.FLASK_HOST, port=config.FLASK_PORT)
+# Entry point moved to main.py

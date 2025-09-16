@@ -1,5 +1,5 @@
 """
-Configuration file for Bluesky Bot
+Configuration file for Flask App
 """
 
 # AWS Configuration

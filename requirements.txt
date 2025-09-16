@@ -13,3 +13,14 @@ flask-cors>=4.0.0
 flask-limiter>=3.0.0
 gunicorn>=21.0.0
 coverage>=7.0.0
+# Staged vision pipeline dependencies (BLIP-2 + smaller LLM)
+torch>=2.0.0
+transformers>=4.30.0
+accelerate>=0.20.0
+bitsandbytes>=0.41.0
+# BLIP-2 for image captioning
+# Smaller LLM options (choose one based on available resources)
+# Option 1: TinyLlama (1.1B parameters) - very lightweight
+# Option 2: Phi-3-mini (3.8B parameters) - good balance
+# Option 3: Qwen2-0.5B - extremely lightweight
+# We'll use TinyLlama as default for maximum resource efficiency

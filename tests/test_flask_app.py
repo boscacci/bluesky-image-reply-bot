@@ -10,7 +10,6 @@ import tempfile
 import os
 from flask import Flask
 import sys
-import os
 
 # Add the src directory to the Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -18,7 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 # Import the Flask app
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from app import app, init_bot, bluesky_bot, temp_dir
-from bluesky_bot.bluesky_bot import BlueskyBot
+from bluesky_bot import BlueskyBot
 
 
 @pytest.fixture
