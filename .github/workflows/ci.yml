@@ -34,19 +34,16 @@ jobs:
     - name: Set environment variables for GitHub secrets
       env:
         BLUESKY_PASSWORD_BIKELIFE: ${{ secrets.BLUESKY_PASSWORD_BIKELIFE }}
-        BLUESKY_HANDLE: ${{ secrets.BLUESKY_HANDLE }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         AWS_REGION: us-east-2
       run: |
         echo "Environment variables set for configuration"
-        echo "BLUESKY_HANDLE is set: $([ -n "$BLUESKY_HANDLE" ] && echo "yes" || echo "no")"
         echo "BLUESKY_PASSWORD_BIKELIFE is set: $([ -n "$BLUESKY_PASSWORD_BIKELIFE" ] && echo "yes" || echo "no")"
         echo "OPENAI_API_KEY is set: $([ -n "$OPENAI_API_KEY" ] && echo "yes" || echo "no")"
     
     - name: Run integration tests
       env:
         BLUESKY_PASSWORD_BIKELIFE: ${{ secrets.BLUESKY_PASSWORD_BIKELIFE }}
-        BLUESKY_HANDLE: ${{ secrets.BLUESKY_HANDLE }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         AWS_REGION: us-east-2
       run: |

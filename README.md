@@ -76,8 +76,10 @@ The project includes automated testing via GitHub Actions that runs on pushes to
 
 **Required GitHub Secrets:**
 - `BLUESKY_PASSWORD_BIKELIFE` - Your Bluesky password
-- `BLUESKY_HANDLE` - Your Bluesky handle (optional, defaults to config.py value)
 - `OPENAI_API_KEY` - Your OpenAI API key for AI reply generation
+
+**Configuration Notes:**
+- `BLUESKY_HANDLE` - Your Bluesky handle (not secret, configured in config.py with default value)
 
 **How it works:**
 1. The CI workflow first attempts to use AWS SSM Parameter Store for secrets

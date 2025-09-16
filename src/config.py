@@ -8,7 +8,7 @@ import os
 AWS_REGION = os.getenv('AWS_REGION', 'us-east-2')  # Change to your preferred region
 SSM_PARAMETER_NAME = 'BLUESKY_PASSWORD_BIKELIFE'
 
-# Bluesky Configuration - supports environment variable fallback for CI
+# Bluesky Configuration - handle is not secret, can be stored in plaintext
 BLUESKY_HANDLE = os.getenv('BLUESKY_HANDLE', 'seattlebike.life')  # Replace with your actual handle
 
 # Environment variable fallbacks for CI/GitHub Actions
