@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+
+{% block title %}Bluesky Custom Feed - Posts with Images from Followed Users{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <div>
+                <h1 class="h2">
+                    <i class="fas fa-images text-primary"></i> 
+                    Posts with Images from Users You Follow
+                </h1>
+                <div class="d-flex align-items-center mt-2">
+                    <span id="status-indicator" class="badge bg-secondary me-2 d-flex align-items-center">
+                        <i class="fas fa-circle me-1"></i> Checking connection...
+                    </span>
+                    <small class="text-muted">Custom Feed • Followed Users Only • Includes Reposts from Followed Users</small>
+                </div>
+            </div>
+            <div>
+                <button class="btn btn-primary" id="refresh-btn" onclick="loadPosts()">
+                    <i class="fas fa-sync-alt"></i> Refresh
+                </button>
+                <button class="btn btn-outline-secondary ms-2" id="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode (Ctrl+D)">
+                    <i class="fas fa-moon" id="theme-icon"></i>
+                </button>
+                <button class="btn btn-outline-info ms-2" onclick="showKeyboardShortcuts()" title="Keyboard shortcuts (Ctrl+?)">
+                    <i class="fas fa-keyboard"></i>
+                </button>
+                <div class="btn-group ms-2" role="group">
+                    <input type="radio" class="btn-check" name="postCount" id="count6" value="6">
+                    <label class="btn btn-outline-secondary" for="count6">6</label>
+                    
+                    <input type="radio" class="btn-check" name="postCount" id="count9" value="9" checked>
+                    <label class="btn btn-outline-secondary" for="count9">9</label>
+                    
+                    <input type="radio" class="btn-check" name="postCount" id="count18" value="18">
+                    <label class="btn btn-outline-secondary" for="count18">18</label>
+                </div>
+                <div class="btn-group ms-2" role="group">
+                    <input type="radio" class="btn-check" name="maxPerUser" id="max1" value="1" checked>
+                    <label class="btn btn-outline-info" for="max1">1/user</label>
+                </div>
+            </div>
+        </div>
+
+        <!-- Loading Spinner -->
+        <div id="loading" class="text-center py-5" style="display: none;">
+            <div class="spinner-border text-primary mb-3" role="status" style="width: 3rem; height: 3rem;">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+            <div class="progress-text">
+                <h4 class="text-primary mb-2">Fetching Posts from Your Custom Feed</h4>
+                <p class="text-muted">Searching through posts from users you follow for images (includes reposts from followed users)...</p>
+                <div class="progress mt-3" style="height: 8px;">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary" 
+                         role="progressbar" 
+                         style="width: 0%" 
+                         aria-valuenow="0" 
+                         aria-valuemin="0" 
+                         aria-valuemax="100">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Success Alert -->
+        <div id="success-alert" class="alert alert-success" style="display: none;" role="alert">
+            <i class="fas fa-check-circle"></i>
+            <span id="success-message"></span>
+        </div>
+
+        <!-- Error Alert -->
+        <div id="error-alert" class="alert alert-danger" style="display: none;" role="alert">
+            <i class="fas fa-exclamation-triangle"></i>
+            <span id="error-message"></span>
+        </div>
+
+        <!-- Posts Container -->
+        <div id="posts-container">
+            <!-- Posts will be loaded here -->
+        </div>
+
+        <!-- Empty State -->
+        <div id="empty-state" class="text-center py-5" style="display: none;">
+            <i class="fas fa-images fa-3x text-muted mb-3"></i>
+            <h3 class="text-muted">No posts with images found</h3>
+            <p class="text-muted">The app searches through posts from users you follow for images (includes reposts from followed users). Try refreshing or check your Bluesky connection.</p>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Initialize theme and keyboard shortcuts
+document.addEventListener('DOMContentLoaded', function() {
+    // Initialize theme
+    const savedTheme = localStorage.getItem('theme') || 'light';
+    setTheme(savedTheme);
+    
+    // Add keyboard shortcuts
+    document.addEventListener('keydown', function(e) {
+        // Ctrl/Cmd + D: Toggle dark mode
+        if ((e.ctrlKey || e.metaKey) && e.key === 'd') {
+            e.preventDefault();
+            toggleTheme();
+        }
+        // Escape: Close any open modals
+        if (e.key === 'Escape') {
+            const modals = document.querySelectorAll('.modal.show');
+            modals.forEach(modal => {
+                const bsModal = bootstrap.Modal.getInstance(modal);
+                if (bsModal) bsModal.hide();
+            });
+        }
+        // Ctrl/Cmd + ?: Show keyboard shortcuts
+        if ((e.ctrlKey || e.metaKey) && e.key === '?') {
+            e.preventDefault();
+            showKeyboardShortcuts();
+        }
+    });
+});
+
+// Theme management
+function toggleTheme() {
+    const currentTheme = document.documentElement.getAttribute('data-bs-theme');
+    const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+    setTheme(newTheme);
+    localStorage.setItem('theme', newTheme);
+}
+
+function setTheme(theme) {
+    document.documentElement.setAttribute('data-bs-theme', theme);
+    const themeIcon = document.getElementById('theme-icon');
+    if (theme === 'dark') {
+        themeIcon.className = 'fas fa-sun';
+    } else {
+        themeIcon.className = 'fas fa-moon';
+    }
+}
+
+// Show keyboard shortcuts modal
+function showKeyboardShortcuts() {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('shortcutsModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'shortcutsModal';
+        modal.className = 'modal fade';
+        modal.innerHTML = `
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">
+                            <i class="fas fa-keyboard me-2"></i>Keyboard Shortcuts
+                        </h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="row">
+                            <div class="col-6">
+                                <h6>Navigation</h6>
+                                <ul class="list-unstyled">
+                                    <li><kbd>Ctrl</kbd> + <kbd>R</kbd> - Refresh posts</li>
+                                    <li><kbd>Ctrl</kbd> + <kbd>D</kbd> - Toggle dark mode</li>
+                                    <li><kbd>Ctrl</kbd> + <kbd>?</kbd> - Show this help</li>
+                                    <li><kbd>Esc</kbd> - Close modals</li>
+                                </ul>
+                            </div>
+                            <div class="col-6">
+                                <h6>Tips</h6>
+                                <ul class="list-unstyled">
+                                    <li>Click images to view full size</li>
+                                    <li>Use the controls above to adjust settings</li>
+                                    <li>Posts are from users you follow only (includes reposts from followed users)</li>
+                                    <li>Settings are saved automatically</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    const bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+</script>
+{% endblock %}
