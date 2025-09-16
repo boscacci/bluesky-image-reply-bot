@@ -16,8 +16,6 @@ import logging
 from datetime import datetime
 from flask import Flask, render_template, jsonify, send_file, request, Response
 from flask_cors import CORS
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
 try:
     from .bluesky_bot import BlueskyBot
     from .ai_config import generate_ai_reply as generate_ai_reply_adapter, get_ai_config_manager
@@ -43,27 +41,8 @@ app = Flask(__name__,
            static_folder=os.path.join(os.path.dirname(__file__), '..', 'static'))
 CORS(app)
 
-# Configure rate limiting with Redis storage (fallback to memory if Redis not available)
-try:
-    # Try to use Redis for rate limiting storage
-    limiter = Limiter(
-        key_func=get_remote_address,
-        default_limits=["200 per day", "50 per hour"],
-        storage_uri="redis://localhost:6379"
-    )
-    limiter.init_app(app)
-    logger.info("Rate limiting configured with Redis storage")
-except Exception as e:
-    # Fallback to memory storage with warning suppression
-    import warnings
-    warnings.filterwarnings("ignore", message="Using the in-memory storage for tracking rate limits")
-    
-    limiter = Limiter(
-        key_func=get_remote_address,
-        default_limits=["200 per day", "50 per hour"]
-    )
-    limiter.init_app(app)
-    logger.info("Rate limiting configured with in-memory storage (Redis not available)")
+# Rate limiting disabled for better user experience
+logger.info("Rate limiting disabled - app will be more responsive")
 
 # Global variables for the bot instance
 bluesky_bot = None
@@ -136,7 +115,6 @@ def index():
     return render_template('index.html')
 
 @app.route('/api/posts')
-@limiter.limit("10 per minute")
 def get_posts():
     """API endpoint to fetch posts with images from followed users only (includes reposts from followed users)"""
     try:
@@ -238,7 +216,6 @@ def get_posts():
         return jsonify({'error': f'Failed to fetch posts: {str(e)}'}), 500
 
 @app.route('/api/image/<filename>')
-@limiter.limit("100 per minute")
 def serve_image(filename):
     """Serve images from temporary directory with security checks"""
     try:
@@ -332,7 +309,6 @@ def api_usage_stats():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/reset-stats', methods=['POST'])
-@limiter.limit("5 per minute")
 def reset_api_stats():
     """API endpoint to reset API usage statistics"""
     try:
@@ -364,7 +340,6 @@ def get_ai_config():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/ai-config', methods=['POST'])
-@limiter.limit("10 per minute")
 def update_ai_config():
     """API endpoint to update AI configuration"""
     try:
@@ -423,7 +398,6 @@ def update_ai_config():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/ai-config/reset', methods=['POST'])
-@limiter.limit("5 per minute")
 def reset_ai_config():
     """API endpoint to reset AI configuration to defaults"""
     try:
@@ -447,7 +421,6 @@ def reset_ai_config():
 # Removed endpoints related to local model lifecycle
 
 @app.route('/api/posts/stream')
-@limiter.limit("5 per minute")
 def get_posts_stream():
     """API endpoint to fetch posts with images with real-time progress updates (includes reposts from followed users)"""
     try:
@@ -530,7 +503,7 @@ def get_posts_stream():
                         max_fetches=max_fetches,
                         max_posts_per_user=max_posts_per_user
                     ):
-                        if progress_update['type'] == 'progress':
+                        if progress_update['type'] in ['progress', 'keepalive']:
                             yield f"data: {json.dumps(progress_update)}\n\n"
                         elif progress_update['type'] == 'complete':
                             # Store results for later pagination state update
@@ -562,7 +535,6 @@ def get_posts_stream():
         return jsonify({'error': f'Failed to fetch posts: {str(e)}'}), 500
 
 @app.route('/api/like', methods=['POST'])
-@limiter.limit("30 per minute")
 def like_post_endpoint():
     """API endpoint to like a post via AT protocol"""
     try:
@@ -590,7 +562,6 @@ def like_post_endpoint():
         return jsonify({'error': f'Failed to like post: {str(e)}'}), 500
 
 @app.route('/api/unlike', methods=['POST'])
-@limiter.limit("30 per minute")
 def unlike_post_endpoint():
     """API endpoint to unlike a post via AT protocol"""
     try:
@@ -618,7 +589,6 @@ def unlike_post_endpoint():
         return jsonify({'error': f'Failed to unlike post: {str(e)}'}), 500
 
 @app.route('/api/like-status', methods=['POST'])
-@limiter.limit("60 per minute")
 def get_like_status_endpoint():
     """API endpoint to get the like status of a post"""
     try:
@@ -646,7 +616,6 @@ def get_like_status_endpoint():
         return jsonify({'error': f'Failed to get like status: {str(e)}'}), 500
 
 @app.route('/api/ai-reply', methods=['POST'])
-@limiter.limit("10 per minute")
 def generate_ai_reply_endpoint():
     """API endpoint to generate a witty AI reply using OpenAI GPT-5 (single call)."""
     try:
@@ -724,5 +693,45 @@ def health_check():
         'timestamp': datetime.now().isoformat(),
         'service': 'bluesky-custom-feed-followed-users'
     })
+
+@app.route('/test-init')
+def test_initialization():
+    """Test endpoint to verify initialization works"""
+    try:
+        # Test bot initialization
+        bot_initialized = init_bot()
+        
+        # Test posts fetching
+        posts_result = None
+        if bot_initialized:
+            result = bluesky_bot.fetch_posts_with_images_web_paginated(
+                target_count=3,
+                max_fetches=50,
+                max_posts_per_user=1,
+                start_cursor=None,
+                seen_post_uris=set()
+            )
+            posts_result = {
+                'success': True,
+                'posts_count': len(result['posts']),
+                'cursor': result['cursor'] is not None
+            }
+        else:
+            posts_result = {'success': False, 'error': 'Bot not initialized'}
+        
+        return jsonify({
+            'test_timestamp': datetime.now().isoformat(),
+            'bot_initialized': bot_initialized,
+            'posts_test': posts_result,
+            'temp_dir': temp_dir,
+            'status': 'test_completed'
+        })
+    except Exception as e:
+        logger.error(f"Test initialization error: {e}")
+        return jsonify({
+            'test_timestamp': datetime.now().isoformat(),
+            'error': str(e),
+            'status': 'test_failed'
+        }), 500
 
 # Entry point moved to main.py

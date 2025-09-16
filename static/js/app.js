@@ -1187,13 +1187,13 @@ const App = {
             console.log('Streaming URL:', streamUrl);
             const eventSource = new EventSource(streamUrl);
             
-            // Add timeout to detect if EventSource fails to connect
+            // Add timeout to detect if EventSource fails to connect (increased to 30 seconds)
             const connectionTimeout = setTimeout(() => {
-                console.error('EventSource connection timeout after 10 seconds');
+                console.error('EventSource connection timeout after 30 seconds');
                 eventSource.close();
                 UI.showError('Connection timeout - please check your network and try again');
                 UI.hideLoading();
-            }, 10000);
+            }, 30000);
             
             eventSource.onmessage = function(event) {
                 try {
@@ -1213,6 +1213,20 @@ const App = {
                                 data.posts_checked || 0, 
                                 data.current_batch || 0
                             );
+                            break;
+                            
+                        case 'keepalive':
+                            console.log('Keep-alive received:', data.message);
+                            // Reset timeout on keep-alive to prevent connection timeout
+                            clearTimeout(connectionTimeout);
+                            const newTimeout = setTimeout(() => {
+                                console.error('EventSource connection timeout after 30 seconds');
+                                eventSource.close();
+                                UI.showError('Connection timeout - please check your network and try again');
+                                UI.hideLoading();
+                            }, 30000);
+                            // Update the timeout reference
+                            connectionTimeout = newTimeout;
                             break;
                             
                         case 'complete':

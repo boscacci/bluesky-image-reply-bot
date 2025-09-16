@@ -82,32 +82,12 @@ class BlueskyBot:
         self.http_session.timeout = (10, 30)  # (connect, read)
     
     def _check_rate_limit(self) -> bool:
-        """Check if we can make an API call without hitting rate limits"""
-        current_time = time.time()
-        
-        # Reset window if needed
-        if current_time - self._api_call_window_start > self._window_duration:
-            self._api_call_count = 0
-            self._api_call_window_start = current_time
-        
-        # Check if we're within rate limits
-        if self._api_call_count >= self._max_calls_per_window:
-            logger.warning(f"Rate limit reached: {self._api_call_count}/{self._max_calls_per_window} calls in window")
-            return False
-        
-        # Check minimum interval between calls
-        time_since_last_call = current_time - self._last_api_call
-        if time_since_last_call < self._min_api_interval:
-            sleep_time = self._min_api_interval - time_since_last_call
-            logger.debug(f"Rate limiting: sleeping for {sleep_time:.2f}s")
-            time.sleep(sleep_time)
-        
+        """Rate limiting disabled for better user experience"""
         return True
     
     def _record_api_call(self):
-        """Record an API call for rate limiting tracking"""
-        self._api_call_count += 1
-        self._last_api_call = time.time()
+        """API call tracking disabled for better user experience"""
+        pass
     
     def _get_cache_key(self, method: str, **kwargs) -> str:
         """Generate a cache key for API calls"""
@@ -1122,6 +1102,16 @@ URI: {post.post.uri}
             'progress_percent': 0
         }
         
+        # Send a keep-alive message to prevent EventSource timeout
+        yield {
+            'type': 'keepalive',
+            'message': 'Connection established, starting search...',
+            'posts_found': 0,
+            'posts_checked': 0,
+            'current_batch': 0,
+            'progress_percent': 0
+        }
+        
         while len(posts_with_images) < target_count and fetch_count < max_fetches:
             try:
                 # Fetch a batch of posts from HOME timeline (followed users only)
@@ -1239,6 +1229,18 @@ URI: {post.post.uri}
                         'current_batch': fetch_count,
                         'progress_percent': min(100, len(posts_with_images) / target_count * 100)
                     }
+                    
+                    # Send keep-alive message every few batches to prevent timeout
+                    if fetch_count % 3 == 0:
+                        yield {
+                            'type': 'keepalive',
+                            'message': f'Still searching... ({fetch_count}/{max_fetches} batches completed)',
+                            'posts_found': len(posts_with_images),
+                            'posts_checked': total_posts_checked,
+                            'current_batch': fetch_count,
+                            'progress_percent': min(100, len(posts_with_images) / target_count * 100)
+                        }
+                    
                     time.sleep(0.5)  # Reduced wait time due to built-in rate limiting
                 
             except Exception as e:
