@@ -2,12 +2,17 @@
 Configuration file for Flask App
 """
 
+import os
+
 # AWS Configuration
-AWS_REGION = 'us-east-2'  # Change to your preferred region
+AWS_REGION = os.getenv('AWS_REGION', 'us-east-2')  # Change to your preferred region
 SSM_PARAMETER_NAME = 'BLUESKY_PASSWORD_BIKELIFE'
 
-# Bluesky Configuration
-BLUESKY_HANDLE = 'seattlebike.bsky.social'  # Replace with your actual handle
+# Bluesky Configuration - supports environment variable fallback for CI
+BLUESKY_HANDLE = os.getenv('BLUESKY_HANDLE', 'seattlebike.life')  # Replace with your actual handle
+
+# Environment variable fallbacks for CI/GitHub Actions
+BLUESKY_PASSWORD_ENV = os.getenv('BLUESKY_PASSWORD_BIKELIFE')
 
 # Bot Settings
 DEFAULT_TIMELINE_LIMIT = 5

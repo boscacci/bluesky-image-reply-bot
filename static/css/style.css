@@ -56,6 +56,28 @@ body {
     margin: 0 auto;
 }
 
+/* Top controls responsiveness */
+.controls-bar {
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.controls-bar .btn-group,
+.controls-bar button {
+    margin-top: 0.25rem;
+}
+
+.no-shrink {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+    .controls-bar {
+        align-items: stretch;
+    }
+}
+
 .post-card {
     width: 100%;
 }
@@ -106,9 +128,13 @@ body {
     overflow: hidden;
     border-radius: 8px;
     flex: 1;
-    min-height: 100px;
-    max-height: 150px;
+    min-height: 160px;
+    max-height: 260px;
     margin-bottom: 0.5rem;
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .image-container img {
@@ -116,7 +142,32 @@ body {
     border-radius: 8px;
     width: 100%;
     height: 100%;
-    object-fit: cover;
+    object-fit: contain; /* show whole image without cropping */
+}
+
+/* Carousel buttons */
+.image-container .carousel-btn {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    background: rgba(0, 0, 0, 0.45);
+    border: none;
+    color: #fff;
+    width: 32px;
+    height: 32px;
+    border-radius: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    z-index: 2;
+}
+
+.image-container .carousel-btn.left { left: 8px; }
+.image-container .carousel-btn.right { right: 8px; }
+
+.image-container .carousel-btn:hover {
+    background: rgba(0, 0, 0, 0.6);
 }
 
 .image-container:hover img {
@@ -621,6 +672,16 @@ kbd {
 
 [data-bs-theme="dark"] .card:hover {
     box-shadow: 0 12px 28px rgba(0, 0, 0, 0.3) !important;
+}
+
+/* Dark mode carousel buttons */
+[data-bs-theme="dark"] .image-container .carousel-btn {
+    background: rgba(255, 255, 255, 0.2);
+    color: #e2e8f0;
+}
+
+[data-bs-theme="dark"] .image-container .carousel-btn:hover {
+    background: rgba(255, 255, 255, 0.3);
 }
 
 /* Status indicator improvements */

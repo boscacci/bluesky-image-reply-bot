@@ -5,7 +5,7 @@
 {% block content %}
 <div class="row">
     <div class="col-12">
-        <div class="d-flex justify-content-between align-items-center mb-4">
+        <div class="d-flex justify-content-between align-items-center mb-4 controls-bar">
             <div>
                 <h1 class="h2">
                     <i class="fas fa-images text-primary"></i> 
@@ -18,9 +18,12 @@
                     <small class="text-muted">Custom Feed • Followed Users Only • Includes Reposts from Followed Users</small>
                 </div>
             </div>
-            <div>
+            <div class="d-flex align-items-center flex-wrap gap-2 justify-content-end w-100 w-md-auto">
                 <button class="btn btn-primary" id="refresh-btn" onclick="loadPosts()">
                     <i class="fas fa-sync-alt"></i> Refresh
+                </button>
+                <button class="btn btn-outline-primary ms-2" id="fetch-more-btn" title="Fetch 9 more (up to 18)">
+                    <i class="fas fa-plus"></i> Fetch more
                 </button>
                 <button class="btn btn-outline-secondary ms-2" id="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode (Ctrl+D)">
                     <i class="fas fa-moon" id="theme-icon"></i>
@@ -29,17 +32,20 @@
                     <i class="fas fa-keyboard"></i>
                 </button>
                 <div class="btn-group ms-2" role="group">
-                    <input type="radio" class="btn-check" name="postCount" id="count6" value="6" checked>
+                    <input type="radio" class="btn-check" name="postCount" id="count6" value="6">
                     <label class="btn btn-outline-secondary" for="count6">6</label>
                     
-                    <input type="radio" class="btn-check" name="postCount" id="count18" value="18">
-                    <label class="btn btn-outline-secondary" for="count18">18</label>
+                    <input type="radio" class="btn-check" name="postCount" id="count9" value="9" checked>
+                    <label class="btn btn-outline-secondary" for="count9">9</label>
+                    
+                    <input type="radio" class="btn-check" name="postCount" id="count12" value="12">
+                    <label class="btn btn-outline-secondary" for="count12">12</label>
                 </div>
                 <div class="btn-group ms-2" role="group">
                     <input type="radio" class="btn-check" name="maxPerUser" id="max1" value="1" checked>
                     <label class="btn btn-outline-info" for="max1">1/user</label>
                 </div>
-                <button class="btn btn-outline-warning ms-2" onclick="showThemeConfig()" title="Configure AI reply themes">
+                <button class="btn btn-outline-warning ms-2 no-shrink" onclick="showThemeConfig()" title="Configure AI reply themes">
                     <i class="fas fa-palette"></i> AI Themes
                 </button>
             </div>
@@ -97,87 +103,81 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="themeConfigModalLabel">
-                    <i class="fas fa-palette me-2"></i>AI Reply Theme Configuration
+                    <i class="fas fa-robot me-2"></i>AI Persona Configuration
                 </h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
                 <div class="row">
-                    <div class="col-md-6">
-                        <h6 class="mb-3">Theme</h6>
+                    <div class="col-12">
+                        <h6 class="mb-3">🤖 AI Persona</h6>
                         <div class="mb-3">
-                            <select class="form-select" id="themeSelect">
-                                <option value="cycling">🚲 Cycling & Accessibility</option>
-                                <option value="environment">🌱 Environment & Sustainability</option>
-                                <option value="technology">💻 Technology & Innovation</option>
-                                <option value="community">🤝 Community & Engagement</option>
-                            </select>
-                            <div class="form-text">Choose the main theme for AI replies</div>
+                            <textarea class="form-control" id="personaTextarea" rows="3" placeholder="Describe the AI's personality, interests, and expertise..."></textarea>
+                            <div class="form-text">Define who the AI is and what they care about. This shapes their perspective and knowledge base.</div>
                         </div>
                         
-                        <h6 class="mb-3">Tone</h6>
+                        <h6 class="mb-3">📍 Location & Context</h6>
                         <div class="mb-3">
-                            <select class="form-select" id="toneSelect">
-                                <option value="enthusiastic">😊 Enthusiastic & Energetic</option>
-                                <option value="professional">💼 Professional & Informative</option>
-                                <option value="casual">😎 Casual & Friendly</option>
-                                <option value="humorous">😄 Light-hearted & Witty</option>
-                            </select>
-                            <div class="form-text">Choose the tone of voice for AI replies</div>
-                        </div>
-                    </div>
-                    
-                    <div class="col-md-6">
-                        <h6 class="mb-3">Style</h6>
-                        <div class="mb-3">
-                            <select class="form-select" id="styleSelect">
-                                <option value="conversational">💬 Conversational & Natural</option>
-                                <option value="formal">📝 Formal & Polished</option>
-                                <option value="brief">⚡ Brief & Concise</option>
-                            </select>
-                            <div class="form-text">Choose the writing style for AI replies</div>
+                            <textarea class="form-control" id="locationTextarea" rows="2" placeholder="Where is the AI 'from' or what location context should they have?"></textarea>
+                            <div class="form-text">Give the AI a sense of place - city, region, or cultural context that influences their perspective.</div>
                         </div>
                         
-                        <h6 class="mb-3">Preview</h6>
-                        <div class="p-3 bg-light rounded" id="themePreview">
-                            <small class="text-muted">Select options above to see a preview of the AI reply style</small>
+                        <h6 class="mb-3">✅ Tone DO Guidelines</h6>
+                        <div class="mb-3">
+                            <textarea class="form-control" id="toneDoTextarea" rows="3" placeholder="What should the AI DO in terms of tone and style?"></textarea>
+                            <div class="form-text">Be specific about positive tone preferences and behaviors you want the AI to exhibit.</div>
+                        </div>
+                        
+                        <h6 class="mb-3">❌ Tone DON'T Guidelines</h6>
+                        <div class="mb-3">
+                            <textarea class="form-control" id="toneDontTextarea" rows="3" placeholder="What should the AI NOT DO in terms of tone and style?"></textarea>
+                            <div class="form-text">Be specific about tone and behaviors you want the AI to avoid.</div>
+                        </div>
+                        
+                        <h6 class="mb-3">📝 Sample Reply 1</h6>
+                        <div class="mb-3">
+                            <textarea class="form-control" id="sampleReply1Textarea" rows="2" placeholder="First example reply..."></textarea>
+                        </div>
+                        
+                        <h6 class="mb-3">📝 Sample Reply 2</h6>
+                        <div class="mb-3">
+                            <textarea class="form-control" id="sampleReply2Textarea" rows="2" placeholder="Second example reply..."></textarea>
+                        </div>
+                        
+                        <h6 class="mb-3">📝 Sample Reply 3</h6>
+                        <div class="mb-3">
+                            <textarea class="form-control" id="sampleReply3Textarea" rows="2" placeholder="Third example reply..."></textarea>
+                            <div class="form-text">Give the AI concrete examples of your writing style. These sample replies demonstrate the tone and approach you want.</div>
+                        </div>
+                        
+                        <div class="d-flex gap-2 mb-3">
+                            <button type="button" class="btn btn-outline-secondary" onclick="resetAIConfig()">
+                                <i class="fas fa-undo me-2"></i>Reset to Defaults
+                            </button>
+                            <button type="button" class="btn btn-outline-info" onclick="previewAIConfig()">
+                                <i class="fas fa-eye me-2"></i>Preview
+                            </button>
                         </div>
                     </div>
                 </div>
                 
-                <div class="mt-4">
-                    <h6 class="mb-3">Current Configuration</h6>
-                    <div class="row">
-                        <div class="col-md-4">
-                            <div class="card">
-                                <div class="card-body text-center">
-                                    <h6 class="card-title">Theme</h6>
-                                    <span class="badge bg-primary" id="currentTheme">Cycling</span>
-                                </div>
-                            </div>
+                <div class="mt-4" id="llmPreview" style="display: none;">
+                    <h6 class="mb-3">Preview</h6>
+                    <div class="p-3 bg-light rounded">
+                        <div class="mb-3">
+                            <strong>Generated System Prompt:</strong>
+                            <div class="mt-1 p-2 bg-white rounded border" id="previewSystemPrompt" style="white-space: pre-wrap; font-family: monospace; font-size: 0.9em;"></div>
                         </div>
-                        <div class="col-md-4">
-                            <div class="card">
-                                <div class="card-body text-center">
-                                    <h6 class="card-title">Tone</h6>
-                                    <span class="badge bg-success" id="currentTone">Enthusiastic</span>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="col-md-4">
-                            <div class="card">
-                                <div class="card-body text-center">
-                                    <h6 class="card-title">Style</h6>
-                                    <span class="badge bg-info" id="currentStyle">Conversational</span>
-                                </div>
-                            </div>
+                        <div>
+                            <strong>Example User Header:</strong>
+                            <div class="mt-1 p-2 bg-white rounded border" id="previewUserHeader" style="white-space: pre-wrap; font-family: monospace; font-size: 0.9em;"></div>
                         </div>
                     </div>
                 </div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-primary" onclick="saveThemeConfig()">Save Configuration</button>
+                <button type="button" class="btn btn-primary" onclick="saveAllConfig()">Save Configuration</button>
             </div>
         </div>
     </div>
@@ -405,8 +405,214 @@ function showSuccessMessage(message) {
     }, 3000);
 }
 
+// AI Configuration functions
+function loadAIConfig() {
+    fetch('/api/ai-config')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                document.getElementById('personaTextarea').value = data.settings.persona || '';
+                document.getElementById('locationTextarea').value = data.settings.location || '';
+                document.getElementById('toneDoTextarea').value = data.settings.tone_do || '';
+                document.getElementById('toneDontTextarea').value = data.settings.tone_dont || '';
+                document.getElementById('sampleReply1Textarea').value = data.settings.sample_reply_1 || '';
+                document.getElementById('sampleReply2Textarea').value = data.settings.sample_reply_2 || '';
+                document.getElementById('sampleReply3Textarea').value = data.settings.sample_reply_3 || '';
+            } else {
+                console.error('Failed to load AI config:', data.error);
+                showErrorMessage('Failed to load AI configuration');
+            }
+        })
+        .catch(error => {
+            console.error('Error loading AI config:', error);
+            showErrorMessage('Error loading AI configuration');
+        });
+}
+
+function saveAIConfig() {
+    const persona = document.getElementById('personaTextarea').value;
+    const location = document.getElementById('locationTextarea').value;
+    const toneDo = document.getElementById('toneDoTextarea').value;
+    const toneDont = document.getElementById('toneDontTextarea').value;
+    const sampleReply1 = document.getElementById('sampleReply1Textarea').value;
+    const sampleReply2 = document.getElementById('sampleReply2Textarea').value;
+    const sampleReply3 = document.getElementById('sampleReply3Textarea').value;
+    
+    const settings = {
+        persona: persona,
+        location: location,
+        tone_do: toneDo,
+        tone_dont: toneDont,
+        sample_reply_1: sampleReply1,
+        sample_reply_2: sampleReply2,
+        sample_reply_3: sampleReply3
+    };
+    
+    fetch('/api/ai-config', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(settings)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showSuccessMessage('AI configuration saved successfully!');
+        } else {
+            console.error('Failed to save AI config:', data.error);
+            showErrorMessage('Failed to save AI configuration');
+        }
+    })
+    .catch(error => {
+        console.error('Error saving AI config:', error);
+        showErrorMessage('Error saving AI configuration');
+    });
+}
+
+function resetAIConfig() {
+    if (confirm('Are you sure you want to reset AI configuration to defaults? This will overwrite your current settings.')) {
+        fetch('/api/ai-config/reset', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                document.getElementById('personaTextarea').value = data.settings.persona || '';
+                document.getElementById('locationTextarea').value = data.settings.location || '';
+                document.getElementById('toneDoTextarea').value = data.settings.tone_do || '';
+                document.getElementById('toneDontTextarea').value = data.settings.tone_dont || '';
+                document.getElementById('sampleReply1Textarea').value = data.settings.sample_reply_1 || '';
+                document.getElementById('sampleReply2Textarea').value = data.settings.sample_reply_2 || '';
+                document.getElementById('sampleReply3Textarea').value = data.settings.sample_reply_3 || '';
+                showSuccessMessage('AI configuration reset to defaults!');
+            } else {
+                console.error('Failed to reset AI config:', data.error);
+                showErrorMessage('Failed to reset AI configuration');
+            }
+        })
+        .catch(error => {
+            console.error('Error resetting AI config:', error);
+            showErrorMessage('Error resetting AI configuration');
+        });
+    }
+}
+
+function previewAIConfig() {
+    const persona = document.getElementById('personaTextarea').value;
+    const location = document.getElementById('locationTextarea').value;
+    const toneDo = document.getElementById('toneDoTextarea').value;
+    const toneDont = document.getElementById('toneDontTextarea').value;
+    const sampleReply1 = document.getElementById('sampleReply1Textarea').value;
+    const sampleReply2 = document.getElementById('sampleReply2Textarea').value;
+    const sampleReply3 = document.getElementById('sampleReply3Textarea').value;
+    
+    // Build system prompt preview
+    const promptParts = [];
+    
+    if (persona.trim()) {
+        promptParts.push(`PERSONA: ${persona.trim()}`);
+    }
+    
+    if (location.trim()) {
+        promptParts.push(`LOCATION: ${location.trim()}`);
+    }
+    
+    // Build tone guidelines
+    const toneGuidelines = [];
+    if (toneDo.trim()) {
+        toneGuidelines.push(`DO: ${toneDo.trim()}`);
+    }
+    if (toneDont.trim()) {
+        toneGuidelines.push(`DON'T: ${toneDont.trim()}`);
+    }
+    
+    if (toneGuidelines.length > 0) {
+        promptParts.push(`TONE GUIDELINES:\n${toneGuidelines.join('\n\n')}`);
+    }
+    
+    // Build sample replies
+    const sampleReplies = [];
+    if (sampleReply1.trim()) sampleReplies.push(sampleReply1.trim());
+    if (sampleReply2.trim()) sampleReplies.push(sampleReply2.trim());
+    if (sampleReply3.trim()) sampleReplies.push(sampleReply3.trim());
+    
+    if (sampleReplies.length > 0) {
+        promptParts.push(`WRITING STYLE REFERENCE: Here are some approved sample replies that demonstrate the desired tone and style:\n${sampleReplies.join('\n\n')}`);
+    }
+    
+    promptParts.push("TASK: Given a Bluesky post (caption) and its images, write a short, funny, topical reply. Keep it under 220 characters unless absolutely necessary. Avoid hashtags unless they enhance the joke.");
+    
+    const systemPrompt = promptParts.join("\n\n");
+    document.getElementById('previewSystemPrompt').textContent = systemPrompt;
+    
+    // Create example user header
+    const exampleUserHeader = `Bluesky post caption: Check out this amazing bike lane!
+
+Accessibility alt texts:
+A wide bike lane with clear markings and safety barriers
+
+There are 2 image(s). Analyze the images and the text together and craft one funny, hyper-relevant reply.`;
+    
+    document.getElementById('previewUserHeader').textContent = exampleUserHeader;
+    
+    // Show preview section
+    document.getElementById('llmPreview').style.display = 'block';
+}
+
+function saveAllConfig() {
+    // Save AI configuration
+    saveAIConfig();
+    
+    // Close modal
+    const modal = bootstrap.Modal.getInstance(document.getElementById('themeConfigModal'));
+    modal.hide();
+}
+
+function showErrorMessage(message) {
+    // Create or update error alert
+    let errorAlert = document.getElementById('error-alert');
+    if (!errorAlert) {
+        errorAlert = document.createElement('div');
+        errorAlert.id = 'error-alert';
+        errorAlert.className = 'alert alert-danger alert-dismissible fade show position-fixed';
+        errorAlert.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
+        errorAlert.innerHTML = `
+            <span id="error-message"></span>
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        `;
+        document.body.appendChild(errorAlert);
+    }
+    
+    const errorMessage = document.getElementById('error-message');
+    errorMessage.textContent = message;
+    errorAlert.style.display = 'block';
+    
+    setTimeout(() => {
+        errorAlert.style.display = 'none';
+    }, 5000);
+}
+
+// Update showThemeConfig to load AI configuration
+const originalShowThemeConfig = showThemeConfig;
+showThemeConfig = function() {
+    // Load AI configuration
+    loadAIConfig();
+    
+    const modal = new bootstrap.Modal(document.getElementById('themeConfigModal'));
+    modal.show();
+};
+
 // Make functions globally available
 window.showThemeConfig = showThemeConfig;
 window.saveThemeConfig = saveThemeConfig;
+window.saveAllConfig = saveAllConfig;
+window.loadAIConfig = loadAIConfig;
+window.saveAIConfig = saveAIConfig;
+window.resetAIConfig = resetAIConfig;
+window.previewAIConfig = previewAIConfig;
 </script>
 {% endblock %}

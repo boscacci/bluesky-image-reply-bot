@@ -4,8 +4,11 @@
 const AppState = {
     posts: [],
     isLoading: false,
-    currentCount: 6,
-    lastRefresh: null
+    currentCount: parseInt(localStorage.getItem('postCount') || '9'),
+    lastRefresh: null,
+    carouselIndex: {},
+    previousPosts: [],
+    wasFetchMore: false
 };
 
 // Utility functions
@@ -227,9 +230,8 @@ const UI = {
                     </div>
                 </div>
                 <div class="card-body">
-                    <p class="card-text">${Utils.escapeHtml(post.post.text).replace(/\n/g, '<br>')}</p>
-                    
                     ${images.length > 0 ? this.createImagesSection(images, index) : ''}
+                    ${post.post.text ? `<p class="card-text">${Utils.escapeHtml(post.post.text).replace(/\n/g, '<br>')}</p>` : ''}
                     
                     <div class="d-flex justify-content-between align-items-center mt-auto">
                         <div class="engagement-stats">
@@ -252,37 +254,88 @@ const UI = {
 
     // Create images section HTML
     createImagesSection: function(images, postIndex) {
-        const colClass = images.length === 1 ? '12' : images.length === 2 ? '6' : '4';
-        
+        // Initialize carousel index to 0 for this post
+        AppState.carouselIndex[postIndex] = 0;
+        const first = images[0];
+        const hasMultiple = images.length > 1;
+        const imagesJson = encodeURIComponent(JSON.stringify(images.map(img => ({
+            filename: img.filename,
+            alt_text: img.alt_text || '',
+            width: img.info?.width || 0,
+            height: img.info?.height || 0,
+            file_size: img.info?.file_size || 0
+        }))));
+
         return `
-            <div class="row g-2 mt-3">
-                ${images.map(image => `
-                    <div class="col-md-${colClass}">
-                        <div class="image-container">
-                            <img src="${ApiService.getImageUrl(image.filename)}" 
-                                 class="img-fluid rounded shadow-sm" 
-                                 alt="${Utils.escapeHtml(image.alt_text)}"
-                                 onclick="UI.openImageModal('${image.filename}', '${Utils.escapeHtml(image.alt_text)}')"
-                                 style="cursor: pointer;"
-                                 loading="lazy">
-                            ${image.alt_text ? `<small class="text-muted d-block mt-1">${Utils.escapeHtml(image.alt_text)}</small>` : ''}
-                            <div class="smart-caption-container mt-2" id="caption-${postIndex}" style="display: none;">
-                                <div class="smart-caption p-2 bg-info bg-opacity-10 rounded border-start border-info border-3">
-                                    <small class="text-info fw-bold">
-                                        <i class="fas fa-robot me-1"></i>AI Caption:
-                                    </small>
-                                    <div class="smart-caption-text mt-1"></div>
-                                </div>
-                            </div>
-                            <small class="text-muted d-block">
-                                ${image.info.width}×${image.info.height} • 
-                                ${Utils.formatFileSize(image.info.file_size)}
-                            </small>
-                        </div>
+            <div class="mt-3">
+                <div class="image-container" data-images="${imagesJson}" data-post-index="${postIndex}">
+                    ${hasMultiple ? `
+                    <button class="carousel-btn left" type="button" aria-label="Previous image" onclick="UI.prevImage(${postIndex})">
+                        <i class="fas fa-chevron-left"></i>
+                    </button>` : ''}
+                    <img id="post-img-${postIndex}" 
+                         src="${ApiService.getImageUrl(first.filename)}" 
+                         class="img-fluid rounded shadow-sm" 
+                         alt="${Utils.escapeHtml(first.alt_text || '')}"
+                         onclick="UI.openImageModal('${first.filename}', '${Utils.escapeHtml(first.alt_text || '')}')"
+                         style="cursor: pointer;"
+                         loading="lazy">
+                    ${hasMultiple ? `
+                    <button class="carousel-btn right" type="button" aria-label="Next image" onclick="UI.nextImage(${postIndex})">
+                        <i class="fas fa-chevron-right"></i>
+                    </button>` : ''}
+                </div>
+                <div class="d-flex justify-content-end align-items-center mt-1">
+                    <small id="meta-${postIndex}" class="text-muted">
+                        ${hasMultiple ? `<span id="counter-${postIndex}">1</span>/${images.length} • ` : ''}${first.info?.width || 0}×${first.info?.height || 0} • ${Utils.formatFileSize(first.info?.file_size || 0)}
+                    </small>
+                </div>
+                <div class="smart-caption-container mt-2" id="caption-${postIndex}" style="display: none;">
+                    <div class="smart-caption p-2 bg-info bg-opacity-10 rounded border-start border-info border-3">
+                        <small class="text-info fw-bold">
+                            <i class="fas fa-robot me-1"></i>AI Caption:
+                        </small>
+                        <div class="smart-caption-text mt-1"></div>
                     </div>
-                `).join('')}
+                </div>
             </div>
         `;
+    },
+
+    // Carousel navigation
+    nextImage: function(postIndex) {
+        UI._changeImage(postIndex, 1);
+    },
+
+    prevImage: function(postIndex) {
+        UI._changeImage(postIndex, -1);
+    },
+
+    _changeImage: function(postIndex, delta) {
+        const container = document.querySelector(`.image-container[data-post-index="${postIndex}"]`);
+        if (!container) return;
+        const images = JSON.parse(decodeURIComponent(container.getAttribute('data-images')));
+        const total = images.length;
+        if (total === 0) return;
+        let idx = AppState.carouselIndex[postIndex] ?? 0;
+        idx = (idx + delta + total) % total;
+        AppState.carouselIndex[postIndex] = idx;
+
+        const imgData = images[idx];
+        const imgEl = document.getElementById(`post-img-${postIndex}`);
+        if (!imgEl) return;
+        imgEl.src = ApiService.getImageUrl(imgData.filename);
+        imgEl.alt = imgData.alt_text || '';
+        imgEl.setAttribute('onclick', `UI.openImageModal('${imgData.filename}', '${Utils.escapeHtml(imgData.alt_text || '')}')`);
+
+        // No alt text visible in UI; nothing to toggle
+        const counterEl = document.getElementById(`counter-${postIndex}`);
+        if (counterEl) counterEl.textContent = String(idx + 1);
+        const metaEl = document.getElementById(`meta-${postIndex}`);
+        if (metaEl) {
+            const prefix = total > 1 ? `${idx + 1}/${total} • ` : '';
+            metaEl.innerHTML = `${prefix}${imgData.width || 0}×${imgData.height || 0} • ${Utils.formatFileSize(imgData.file_size || 0)}`;
+        }
     },
 
     // Display posts
@@ -335,6 +388,57 @@ const UI = {
                     postElement.classList.add('loaded');
                 }, 50);
             }, index * 150); // 150ms delay between each post
+        });
+    },
+
+    // Display new posts and hide previous posts behind a collapsible section
+    displayNewAndPrevious: function(newPosts, previousPosts) {
+        const postsContainer = document.getElementById('posts-container');
+        const emptyState = document.getElementById('empty-state');
+        emptyState.style.display = 'none';
+
+        // Build containers
+        postsContainer.innerHTML = '';
+
+        const currentSection = document.createElement('div');
+        currentSection.id = 'current-posts-section';
+        const currentHeader = document.createElement('div');
+        currentHeader.className = 'd-flex align-items-center justify-content-between mb-2';
+        currentHeader.innerHTML = `<h5 class="mb-0">Latest posts</h5><span class="text-muted small">${newPosts.length} new</span>`;
+        currentSection.appendChild(currentHeader);
+
+        // Render new posts
+        newPosts.forEach((post, idx) => {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'post-card';
+            wrapper.innerHTML = this.createPostCard(post, idx);
+            currentSection.appendChild(wrapper);
+            setTimeout(() => wrapper.classList.add('loaded'), 50 + idx * 100);
+        });
+
+        // Previous posts collapsible
+        const prevWrapper = document.createElement('div');
+        prevWrapper.className = 'mt-3';
+        const collapseId = 'previous-posts-collapse';
+        prevWrapper.innerHTML = `
+            <button class="btn btn-outline-secondary w-100" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}" aria-expanded="false" aria-controls="${collapseId}">
+                <i class="fas fa-history me-1"></i> Show previous posts (${previousPosts.length})
+            </button>
+            <div class="collapse mt-3" id="${collapseId}">
+                <div id="previous-posts-section"></div>
+            </div>
+        `;
+
+        postsContainer.appendChild(currentSection);
+        postsContainer.appendChild(prevWrapper);
+
+        const prevSection = prevWrapper.querySelector('#previous-posts-section');
+        previousPosts.forEach((post, idx) => {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'post-card';
+            // Indexes for previous posts should not clash with new posts; offset by newPosts length
+            wrapper.innerHTML = this.createPostCard(post, newPosts.length + idx);
+            prevSection.appendChild(wrapper);
         });
     },
 
@@ -437,8 +541,16 @@ const UI = {
                         </div>
                         <div class="modal-body">
                             <div class="mb-3">
-                                <h6 class="text-muted">Original Post by @${Utils.escapeHtml(post.author.handle)}</h6>
-                                <p class="small text-muted">${Utils.escapeHtml(post.post.text)}</p>
+                                <h6 class="text-muted">Original Post by @<span id="originalHandle"></span></h6>
+                                <div class="small text-muted p-2 bg-light rounded">
+                                    <p class="mb-2" id="originalPostText"></p>
+                                    <div class="mt-2" id="imagesIncluded" style="display:none;">
+                                        <small class="text-info">
+                                            <i class="fas fa-images me-1"></i>
+                                            <span id="imagesIncludedCount"></span> image(s) included
+                                        </small>
+                                    </div>
+                                </div>
                             </div>
                             <div class="ai-reply-content">
                                 <h6 class="text-success mb-3">
@@ -450,10 +562,15 @@ const UI = {
                             </div>
                         </div>
                         <div class="modal-footer">
-                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                            <button type="button" class="btn btn-warning" id="rerollBtn" onclick="UI.rerollAiReply()">
+                                <i class="fas fa-dice"></i> Roll Again
+                            </button>
                             <button type="button" class="btn btn-success" onclick="UI.copyAiReply()">
                                 <i class="fas fa-copy"></i> Copy Reply
                             </button>
+                            <a href="#" target="_blank" rel="noopener" class="btn btn-outline-primary" id="modalViewLink">
+                                <i class="fas fa-external-link-alt"></i> View on Bluesky
+                            </a>
                         </div>
                     </div>
                 </div>
@@ -461,11 +578,70 @@ const UI = {
             document.body.appendChild(modal);
         }
         
+        // Update modal content for the current post
+        const originalHandle = document.getElementById('originalHandle');
+        if (originalHandle) originalHandle.textContent = post.author.handle;
+        const originalPostText = document.getElementById('originalPostText');
+        if (originalPostText) originalPostText.innerHTML = Utils.escapeHtml(post.post.text).replace(/\n/g, '<br>');
+        const imagesIncluded = document.getElementById('imagesIncluded');
+        const imagesIncludedCount = document.getElementById('imagesIncludedCount');
+        if (imagesIncluded && imagesIncludedCount) {
+            if (images && images.length > 0) {
+                imagesIncluded.style.display = '';
+                imagesIncludedCount.textContent = String(images.length);
+            } else {
+                imagesIncluded.style.display = 'none';
+            }
+        }
         // Set the AI reply text
         document.getElementById('aiReplyText').textContent = aiReply;
+        // Store the current post index on the modal for reroll
+        modal.setAttribute('data-post-index', String(AppState.posts.indexOf(post)));
+        // Update View on Bluesky link
+        const postUrl = `https://bsky.app/profile/${post.author.handle}/post/${post.post.uri.split('/').pop()}`;
+        const viewLink = document.getElementById('modalViewLink');
+        if (viewLink) viewLink.setAttribute('href', postUrl);
         
         const bsModal = new bootstrap.Modal(modal);
         bsModal.show();
+    },
+
+    // Reroll to generate a new AI reply for the same post
+    rerollAiReply: async function() {
+        const modal = document.getElementById('aiReplyModal');
+        if (!modal) return;
+        const postIndexAttr = modal.getAttribute('data-post-index');
+        const postIndex = postIndexAttr ? parseInt(postIndexAttr, 10) : NaN;
+        if (Number.isNaN(postIndex)) return;
+
+        const post = AppState.posts[postIndex];
+        if (!post) return;
+        const images = post.embeds.filter(embed => embed.type === 'image');
+        if (images.length === 0) return;
+
+        const rerollBtn = document.getElementById('rerollBtn');
+        const original = rerollBtn ? rerollBtn.innerHTML : '';
+        if (rerollBtn) {
+            rerollBtn.disabled = true;
+            rerollBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rolling...';
+        }
+
+        try {
+            const imageFilenames = images.map(img => img.filename);
+            const imageAltTexts = images.map(img => img.alt_text || '');
+            const postText = post.post.text || '';
+            const themeConfig = JSON.parse(localStorage.getItem('aiThemeConfig') || '{"theme": "cycling", "tone": "enthusiastic", "style": "conversational"}');
+            const response = await ApiService.generateAiReply(postIndex, imageFilenames, postText, imageAltTexts, themeConfig);
+            document.getElementById('aiReplyText').textContent = response.ai_reply;
+        } catch (error) {
+            console.error('Error rerolling AI reply:', error);
+            UI.showError('Failed to regenerate reply: ' + error.message);
+        } finally {
+            if (rerollBtn) {
+                rerollBtn.disabled = false;
+                rerollBtn.innerHTML = original;
+            }
+        }
     },
 
     // Copy AI reply to clipboard
@@ -493,6 +669,15 @@ const App = {
     // Initialize the app
     init: function() {
         console.log('App initializing...');
+        // Ensure currentCount aligns with the UI default selection (prevents stale localStorage overriding defaults)
+        const checked = document.querySelector('input[name="postCount"]:checked');
+        if (checked) {
+            const uiCount = parseInt(checked.value);
+            if (!Number.isNaN(uiCount)) {
+                AppState.currentCount = uiCount;
+                localStorage.setItem('postCount', String(AppState.currentCount));
+            }
+        }
         this.setupEventListeners();
         // Load user info, posts, and check status
         this.loadUserInfo();
@@ -509,11 +694,36 @@ const App = {
             this.loadPostsWithProgress();
         });
 
+        // Fetch more button
+        const fetchMoreBtn = document.getElementById('fetch-more-btn');
+        if (fetchMoreBtn) {
+            fetchMoreBtn.addEventListener('click', () => {
+                const newCount = Math.min(AppState.currentCount + 9, 18);
+                if (newCount !== AppState.currentCount) {
+                    // Mark that we are fetching more and store previously shown posts
+                    AppState.wasFetchMore = true;
+                    AppState.previousPosts = Array.isArray(AppState.posts) ? AppState.posts.slice() : [];
+                    AppState.currentCount = newCount;
+                    localStorage.setItem('postCount', String(AppState.currentCount));
+                    this.syncPostCountRadios();
+                    this.updateFetchMoreButton();
+                    this.loadPostsWithProgress();
+                }
+            });
+        }
+
         // Post count radio buttons
         document.querySelectorAll('input[name="postCount"]').forEach(radio => {
+            // Initialize checked state from saved value
+            if (parseInt(radio.value) === AppState.currentCount) {
+                radio.checked = true;
+            }
+
             radio.addEventListener('change', (e) => {
                 if (e.target.checked) {
                     AppState.currentCount = parseInt(e.target.value);
+                    localStorage.setItem('postCount', String(AppState.currentCount));
+                    this.updateFetchMoreButton();
                     this.loadPostsWithProgress();
                 }
             });
@@ -526,6 +736,25 @@ const App = {
                 this.loadPostsWithProgress();
             }
         });
+
+        // Ensure controls reflect initial state
+        this.updateFetchMoreButton();
+    },
+
+    // Keep the radio group in sync when count changes programmatically
+    syncPostCountRadios: function() {
+        document.querySelectorAll('input[name="postCount"]').forEach(radio => {
+            radio.checked = parseInt(radio.value) === AppState.currentCount;
+        });
+    },
+
+    // Enable/disable the fetch more button based on current count
+    updateFetchMoreButton: function() {
+        const fetchMoreBtn = document.getElementById('fetch-more-btn');
+        if (!fetchMoreBtn) return;
+        const atMax = AppState.currentCount >= 18;
+        fetchMoreBtn.disabled = atMax;
+        fetchMoreBtn.textContent = atMax ? 'Max reached' : 'Fetch more';
     },
 
     // Check bot status
@@ -616,7 +845,18 @@ const App = {
                         case 'complete':
                             console.log('Posts loaded:', data);
                             if (data.posts && data.posts.length > 0) {
-                                UI.displayPostsProgressively(data.posts);
+                                if (AppState.wasFetchMore && AppState.previousPosts.length > 0) {
+                                    // Combine new + previous for state, render with collapsible
+                                    const combined = data.posts.concat(AppState.previousPosts);
+                                    AppState.posts = combined;
+                                    UI.displayNewAndPrevious(data.posts, AppState.previousPosts);
+                                } else {
+                                    UI.displayPostsProgressively(data.posts);
+                                    AppState.posts = data.posts;
+                                }
+                                // Reset fetch-more state
+                                AppState.wasFetchMore = false;
+                                AppState.previousPosts = [];
                                 AppState.lastRefresh = new Date();
                                 UI.hideError();
                             } else {

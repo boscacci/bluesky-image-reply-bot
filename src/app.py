@@ -20,13 +20,11 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 try:
     from .bluesky_bot import BlueskyBot
-    from .theme_config import get_available_themes
-    from .openai_integration import generate_openai_ai_reply
+    from .ai_config import generate_ai_reply as generate_ai_reply_adapter, get_ai_config_manager
     from . import config
 except ImportError:
     from bluesky_bot import BlueskyBot
-    from theme_config import get_available_themes
-    from openai_integration import generate_openai_ai_reply
+    from ai_config import generate_ai_reply as generate_ai_reply_adapter, get_ai_config_manager
     import config
 
 # Configure logging
@@ -55,7 +53,6 @@ limiter.init_app(app)
 # Global variables for the bot instance
 bluesky_bot = None
 temp_dir = None
-_models_preloaded = False  # Deprecated, retained for backward compatibility only
 
 # Initialize the bot
 def init_bot():
@@ -67,9 +64,7 @@ def init_bot():
             return True
     return bluesky_bot is not None
 
-# Removed local model initialization; using OpenAI API instead
-def init_models():
-    return False
+# Using OpenAI API instead of local models
 
 @app.route('/')
 def index():
@@ -87,15 +82,18 @@ def get_posts():
         
         target_count = request.args.get('count', 6, type=int)
         max_posts_per_user = request.args.get('max_per_user', 1, type=int)
+        max_fetches = request.args.get('max_fetches', 300, type=int)
         
         # Validate parameters
         if target_count < 1 or target_count > 18:
             return jsonify({'error': 'Count must be between 1 and 18'}), 400
         if max_posts_per_user < 1 or max_posts_per_user > 1:
             return jsonify({'error': 'Max posts per user must be 1'}), 400
+        if max_fetches < 1 or max_fetches > 2000:
+            return jsonify({'error': 'max_fetches must be between 1 and 2000'}), 400
         
-        logger.info(f"Fetching {target_count} posts with max {max_posts_per_user} per user from followed users only (includes reposts from followed users)")
-        posts = bluesky_bot.fetch_posts_with_images_web(target_count, max_posts_per_user=max_posts_per_user)
+        logger.info(f"Fetching {target_count} posts (max_fetches={max_fetches}) with max {max_posts_per_user} per user from followed users only (includes reposts from followed users)")
+        posts = bluesky_bot.fetch_posts_with_images_web(target_count, max_fetches=max_fetches, max_posts_per_user=max_posts_per_user)
         
         logger.info(f"Successfully fetched {len(posts)} posts with images from followed users")
         
@@ -104,6 +102,7 @@ def get_posts():
             'posts': posts,
             'count': len(posts),
             'max_per_user': max_posts_per_user,
+            'max_fetches': max_fetches,
             'source': 'custom_feed_followed_users_only'
         })
     except Exception as e:
@@ -181,17 +180,99 @@ def user_info():
         logger.error(f"Error getting user info: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/themes')
-def get_themes():
-    """API endpoint to get available AI reply themes"""
+@app.route('/api/ai-config')
+def get_ai_config():
+    """API endpoint to get current AI configuration"""
     try:
-        themes = get_available_themes()
+        manager = get_ai_config_manager()
+        config = manager.load_config()
         return jsonify({
             'success': True,
-            'themes': themes
+            'settings': config.to_dict()
         })
     except Exception as e:
-        logger.error(f"Error getting themes: {e}")
+        logger.error(f"Error getting AI config: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ai-config', methods=['POST'])
+@limiter.limit("10 per minute")
+def update_ai_config():
+    """API endpoint to update AI configuration"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+        
+        persona = data.get('persona')
+        tone_do = data.get('tone_do')
+        tone_dont = data.get('tone_dont')
+        location = data.get('location')
+        sample_reply_1 = data.get('sample_reply_1')
+        sample_reply_2 = data.get('sample_reply_2')
+        sample_reply_3 = data.get('sample_reply_3')
+        
+        if all(x is None for x in [persona, tone_do, tone_dont, location, sample_reply_1, sample_reply_2, sample_reply_3]):
+            return jsonify({'error': 'At least one setting must be provided'}), 400
+        
+        manager = get_ai_config_manager()
+        config = manager.load_config()
+        
+        if persona is not None:
+            config.persona = persona
+        
+        if tone_do is not None:
+            config.tone_do = tone_do
+        
+        if tone_dont is not None:
+            config.tone_dont = tone_dont
+        
+        if location is not None:
+            config.location = location
+        
+        if sample_reply_1 is not None:
+            config.sample_reply_1 = sample_reply_1
+        
+        if sample_reply_2 is not None:
+            config.sample_reply_2 = sample_reply_2
+        
+        if sample_reply_3 is not None:
+            config.sample_reply_3 = sample_reply_3
+        
+        success = manager.save_config(config)
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'message': 'AI configuration updated successfully',
+                'settings': config.to_dict()
+            })
+        else:
+            return jsonify({'error': 'Failed to save AI configuration'}), 500
+            
+    except Exception as e:
+        logger.error(f"Error updating AI config: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ai-config/reset', methods=['POST'])
+@limiter.limit("5 per minute")
+def reset_ai_config():
+    """API endpoint to reset AI configuration to defaults"""
+    try:
+        manager = get_ai_config_manager()
+        success = manager.reset_to_defaults()
+        
+        if success:
+            config = manager.load_config()
+            return jsonify({
+                'success': True,
+                'message': 'AI configuration reset to defaults',
+                'settings': config.to_dict()
+            })
+        else:
+            return jsonify({'error': 'Failed to reset AI configuration'}), 500
+            
+    except Exception as e:
+        logger.error(f"Error resetting AI config: {e}")
         return jsonify({'error': str(e)}), 500
 
 # Removed endpoints related to local model lifecycle
@@ -207,21 +288,25 @@ def get_posts_stream():
         
         target_count = request.args.get('count', 6, type=int)
         max_posts_per_user = request.args.get('max_per_user', 1, type=int)
+        max_fetches = request.args.get('max_fetches', 300, type=int)
         
         # Validate parameters
         if target_count < 1 or target_count > 18:
             return jsonify({'error': 'Count must be between 1 and 18'}), 400
         if max_posts_per_user < 1 or max_posts_per_user > 1:
             return jsonify({'error': 'Max posts per user must be 1'}), 400
+        if max_fetches < 1 or max_fetches > 2000:
+            return jsonify({'error': 'max_fetches must be between 1 and 2000'}), 400
         
         def generate():
             try:
                 # Send initial progress
-                yield f"data: {json.dumps({'type': 'start', 'message': f'Starting search for {target_count} posts with images from followed users only (includes reposts from followed users)...'})}\n\n"
+                yield f"data: {json.dumps({'type': 'start', 'message': f'Starting search for {target_count} posts with images from followed users only (includes reposts from followed users)...', 'max_fetches': max_fetches})}\n\n"
                 
                 # Use the streaming method that yields progress updates
                 for progress_update in bluesky_bot.fetch_posts_with_images_web_stream_generator(
-                    target_count, 
+                    target_count,
+                    max_fetches=max_fetches,
                     max_posts_per_user=max_posts_per_user
                 ):
                     if progress_update['type'] == 'progress':
@@ -247,7 +332,7 @@ def get_posts_stream():
 
 @app.route('/api/ai-reply', methods=['POST'])
 @limiter.limit("10 per minute")
-def generate_ai_reply():
+def generate_ai_reply_endpoint():
     """API endpoint to generate a witty AI reply using OpenAI GPT-4o (single call)."""
     try:
         data = request.get_json()
@@ -303,7 +388,7 @@ def generate_ai_reply():
         }
         
         logger.info(f"Generating OpenAI GPT-4o reply with context: post_text='{post_text[:100]}...', alt_texts={image_alt_texts}")
-        ai_reply = generate_openai_ai_reply(image_paths, enhanced_context, theme_config)
+        ai_reply = generate_ai_reply_adapter(image_paths, enhanced_context, theme_config)
         
         return jsonify({
             'success': True,

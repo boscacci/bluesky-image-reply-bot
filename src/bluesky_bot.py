@@ -31,7 +31,7 @@ class BlueskyBot:
         self.ssm_client = boto3.client('ssm', region_name=config.AWS_REGION)
         
     def get_ssm_parameter(self, parameter_name: str) -> str:
-        """Fetch parameter from AWS SSM Parameter Store"""
+        """Fetch parameter from AWS SSM Parameter Store with environment variable fallback"""
         try:
             response = self.ssm_client.get_parameter(
                 Name=parameter_name,
@@ -40,6 +40,16 @@ class BlueskyBot:
             return response['Parameter']['Value']
         except Exception as e:
             print(f"Error fetching SSM parameter {parameter_name}: {e}")
+            print("Attempting to use environment variable fallback...")
+            
+            # Fallback to environment variables for CI/GitHub Actions
+            if parameter_name == 'BLUESKY_PASSWORD_BIKELIFE':
+                env_value = os.getenv('BLUESKY_PASSWORD_BIKELIFE')
+                if env_value:
+                    print("Using BLUESKY_PASSWORD_BIKELIFE from environment variable")
+                    return env_value
+            
+            # If no fallback available, raise the original exception
             raise
     
     def authenticate(self, handle: str, password: str):
@@ -121,36 +131,45 @@ URI: {post.post.uri}
         
         # Handle images
         if hasattr(embed, 'images') and embed.images:
-            for i, image in enumerate(embed.images):
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            def build_image_task(i, image):
                 filename = f"image_{post.post.uri.split('/')[-1]}_{i}.jpg"
-                # Get the image URL from the blob reference
-                # Debug: print the image structure
-                print(f"🔍 Image structure: {dir(image)}")
-                print(f"🔍 Image.image structure: {dir(image.image)}")
-                print(f"🔍 Image.image.ref structure: {dir(image.image.ref)}")
-                print(f"🔍 Image.image.ref.link: {image.image.ref.link}")
-                
-                # The ref.link contains the blob hash, we need to construct the proper URL
-                blob_hash = image.image.ref.link
-                if not blob_hash.startswith('http'):
-                    # Construct the proper blob URL - need to get the DID from the post
-                    post_did = post.post.uri.split('/')[2]  # Extract DID from URI
+                blob_hash = getattr(getattr(image, 'image', None), 'ref', None).link if hasattr(getattr(image, 'image', None), 'ref') else ''
+                if not blob_hash or not isinstance(blob_hash, str) or not blob_hash.startswith('http'):
+                    post_did = post.post.uri.split('/')[2]
                     image_url = f"https://bsky.social/xrpc/com.atproto.sync.getBlob?did={post_did}&cid={blob_hash}"
-                    print(f"🔍 Constructed image URL: {image_url}")
                 else:
                     image_url = blob_hash
+
                 image_path = self.download_image(image_url, filename)
-                
-                if image_path:
-                    image_info = self.get_image_info(image_path)
-                    embeds.append({
-                        'type': 'image',
-                        'url': image_url,
-                        'alt_text': image.alt if hasattr(image, 'alt') else '',
-                        'local_path': image_path,
-                        'filename': filename,
-                        'info': image_info
-                    })
+                if not image_path:
+                    return None, i
+                image_info = self.get_image_info(image_path)
+                return {
+                    'type': 'image',
+                    'url': image_url,
+                    'alt_text': image.alt if hasattr(image, 'alt') else '',
+                    'local_path': image_path,
+                    'filename': filename,
+                    'info': image_info
+                }, i
+
+            results_buffer = [None] * len(embed.images)
+            with ThreadPoolExecutor(max_workers=min(8, len(embed.images))) as executor:
+                futures = [executor.submit(build_image_task, i, image) for i, image in enumerate(embed.images)]
+                for future in as_completed(futures):
+                    try:
+                        result, idx = future.result()
+                        if result is not None:
+                            results_buffer[idx] = result
+                    except Exception as e:
+                        print(f"Error processing image embed concurrently: {e}")
+                        continue
+
+            for item in results_buffer:
+                if item is not None:
+                    embeds.append(item)
         
         # Handle external links with images
         elif hasattr(embed, 'external') and embed.external:
