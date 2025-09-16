@@ -1141,15 +1141,16 @@ const App = {
         }
     },
 
-    // Load posts from API
+    // Load posts from API (non-streaming fallback)
     async loadPosts() {
         if (AppState.isLoading) {
             console.log('Already loading posts, skipping...');
             return;
         }
 
-        console.log('Loading posts...', { count: AppState.currentCount });
+        console.log('Loading posts (non-streaming fallback)...', { count: AppState.currentCount });
         UI.showLoading();
+        UI.showProgress('Loading posts...', 0, 0, 0, 0);
         
         try {
             const data = await ApiService.getPosts(AppState.currentCount, false, AppState.maxPerUser, AppState.sessionId);
@@ -1166,7 +1167,7 @@ const App = {
             }
         } catch (error) {
             console.error('Error loading posts:', error);
-            UI.showError(error.message);
+            UI.showError('Failed to load posts: ' + error.message);
         } finally {
             UI.hideLoading();
         }
@@ -1187,13 +1188,13 @@ const App = {
             console.log('Streaming URL:', streamUrl);
             const eventSource = new EventSource(streamUrl);
             
-            // Add timeout to detect if EventSource fails to connect (increased to 30 seconds)
-            const connectionTimeout = setTimeout(() => {
-                console.error('EventSource connection timeout after 30 seconds');
+            // Use a longer timeout (2 minutes) and simpler timeout handling
+            let connectionTimeout = setTimeout(() => {
+                console.error('EventSource connection timeout after 2 minutes');
                 eventSource.close();
                 UI.showError('Connection timeout - please check your network and try again');
                 UI.hideLoading();
-            }, 30000);
+            }, 120000); // 2 minutes instead of 30 seconds
             
             eventSource.onmessage = function(event) {
                 try {
@@ -1217,21 +1218,19 @@ const App = {
                             
                         case 'keepalive':
                             console.log('Keep-alive received:', data.message);
-                            // Reset timeout on keep-alive to prevent connection timeout
+                            // Simply reset the timeout - no need to reassign the variable
                             clearTimeout(connectionTimeout);
-                            const newTimeout = setTimeout(() => {
-                                console.error('EventSource connection timeout after 30 seconds');
+                            connectionTimeout = setTimeout(() => {
+                                console.error('EventSource connection timeout after 2 minutes');
                                 eventSource.close();
                                 UI.showError('Connection timeout - please check your network and try again');
                                 UI.hideLoading();
-                            }, 30000);
-                            // Update the timeout reference
-                            connectionTimeout = newTimeout;
+                            }, 120000);
                             break;
                             
                         case 'complete':
                             console.log('Posts loaded:', data);
-                            clearTimeout(connectionTimeout); // Clear the timeout since we got a response
+                            clearTimeout(connectionTimeout);
                             if (data.posts && data.posts.length > 0) {
                                 if (AppState.wasFetchMore && AppState.previousPosts.length > 0) {
                                     // Combine new + previous for state, render with collapsible
@@ -1257,7 +1256,7 @@ const App = {
                             
                         case 'error':
                             console.error('Stream error:', data.error);
-                            clearTimeout(connectionTimeout); // Clear the timeout since we got an error
+                            clearTimeout(connectionTimeout);
                             UI.showError(data.error);
                             eventSource.close();
                             UI.hideLoading();
@@ -1270,10 +1269,16 @@ const App = {
             
             eventSource.onerror = function(error) {
                 console.error('EventSource error:', error);
-                clearTimeout(connectionTimeout); // Clear the timeout since we got an error
-                UI.showError('Connection lost while fetching posts');
+                clearTimeout(connectionTimeout);
                 eventSource.close();
                 UI.hideLoading();
+                
+                // Don't show error immediately - try fallback first
+                console.log('EventSource failed, trying fallback to non-streaming API...');
+                App.loadPosts().catch(fallbackError => {
+                    console.error('Fallback also failed:', fallbackError);
+                    UI.showError('Failed to load posts: ' + fallbackError.message);
+                });
             };
             
         } catch (error) {

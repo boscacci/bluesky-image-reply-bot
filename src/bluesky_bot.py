@@ -1230,16 +1230,15 @@ URI: {post.post.uri}
                         'progress_percent': min(100, len(posts_with_images) / target_count * 100)
                     }
                     
-                    # Send keep-alive message every few batches to prevent timeout
-                    if fetch_count % 3 == 0:
-                        yield {
-                            'type': 'keepalive',
-                            'message': f'Still searching... ({fetch_count}/{max_fetches} batches completed)',
-                            'posts_found': len(posts_with_images),
-                            'posts_checked': total_posts_checked,
-                            'current_batch': fetch_count,
-                            'progress_percent': min(100, len(posts_with_images) / target_count * 100)
-                        }
+                    # Send keep-alive message every batch to prevent timeout
+                    yield {
+                        'type': 'keepalive',
+                        'message': f'Still searching... ({fetch_count}/{max_fetches} batches completed)',
+                        'posts_found': len(posts_with_images),
+                        'posts_checked': total_posts_checked,
+                        'current_batch': fetch_count,
+                        'progress_percent': min(100, len(posts_with_images) / target_count * 100)
+                    }
                     
                     time.sleep(0.5)  # Reduced wait time due to built-in rate limiting
                 
