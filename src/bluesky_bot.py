@@ -7,7 +7,7 @@ Includes both CLI and web functionality
 import os
 import tempfile
 import requests
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from pathlib import Path
 import boto3
 from atproto import Client, models
@@ -46,14 +46,26 @@ class BlueskyBot:
         # Setup optimized HTTP session for image downloads
         self._setup_http_session()
         
+        # Media-focused feed URIs (can be customized)
+        self._media_feed_uris = [
+            # Add custom feed URIs here when available
+            # "at://did:plc:your-feed-did/app.bsky.feed.generator/media-posts"
+        ]
+        
         # API usage tracking
         self._api_call_count = 0
         self._api_call_window_start = time.time()
         self._max_calls_per_window = 50  # Conservative limit
         self._window_duration = 300  # 5 minutes
         
+        # Media user caching for optimization
+        self._media_user_cache = {}  # Cache users who frequently post media
+        self._media_user_cache_ttl = 3600  # 1 hour cache TTL
+        self._media_user_threshold = 0.3  # Users with >30% media posts are cached
+        
         # Optimized batch sizes for different operations
-        self._timeline_batch_size = 50  # Increased from 25 for better efficiency
+        self._timeline_batch_size = 20  # Optimized for media filtering efficiency
+        self._media_focused_batch_size = 10  # Smaller batches when specifically looking for media
         self._max_concurrent_downloads = 8  # Optimal for image downloads
     
     def _setup_http_session(self):
@@ -135,6 +147,102 @@ class BlueskyBot:
         
         for key in expired_keys:
             del self._timeline_cache[key]
+    
+    def _is_media_user_cached(self, user_handle: str) -> bool:
+        """Check if user is cached as a frequent media poster"""
+        if user_handle not in self._media_user_cache:
+            return False
+        
+        cache_entry = self._media_user_cache[user_handle]
+        if time.time() - cache_entry['timestamp'] > self._media_user_cache_ttl:
+            del self._media_user_cache[user_handle]
+            return False
+        
+        return cache_entry['is_media_user']
+    
+    def _cache_media_user(self, user_handle: str, is_media_user: bool):
+        """Cache whether a user frequently posts media"""
+        self._media_user_cache[user_handle] = {
+            'is_media_user': is_media_user,
+            'timestamp': time.time()
+        }
+    
+    def _analyze_user_media_ratio(self, user_handle: str, sample_size: int = 20) -> float:
+        """Analyze a user's media posting ratio from recent posts"""
+        try:
+            # Get recent posts from user
+            author_feed = self.client.app.bsky.feed.get_author_feed(
+                actor=user_handle,
+                limit=sample_size
+            )
+            
+            if not author_feed or not hasattr(author_feed, 'feed'):
+                return 0.0
+            
+            media_posts = 0
+            total_posts = len(author_feed.feed)
+            
+            for post in author_feed.feed:
+                if self._has_media(post):
+                    media_posts += 1
+            
+            ratio = media_posts / total_posts if total_posts > 0 else 0.0
+            return ratio
+            
+        except Exception as e:
+            logger.warning(f"Failed to analyze media ratio for {user_handle}: {e}")
+            return 0.0
+    
+    def _has_media(self, post) -> bool:
+        """Check if a post has embedded media (images or external links with thumbnails)"""
+        try:
+            if not hasattr(post, 'post') or not hasattr(post.post, 'record'):
+                return False
+            
+            record = post.post.record
+            if not hasattr(record, 'embed') or not record.embed:
+                return False
+            
+            embed = record.embed
+            
+            # Check for images
+            if hasattr(embed, 'images') and embed.images:
+                return True
+            
+            # Check for external links with thumbnails
+            if hasattr(embed, 'external') and embed.external:
+                if hasattr(embed.external, 'thumb') and embed.external.thumb:
+                    return True
+            
+            # Check for video embeds with thumbnails
+            if hasattr(embed, 'video') and embed.video:
+                if hasattr(embed.video, 'thumb') and embed.video.thumb:
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logger.debug(f"Error checking media in post: {e}")
+            return False
+    
+    def _get_safe_image_count(self, post) -> int:
+        """Safely get the number of images in a post"""
+        try:
+            if not hasattr(post, 'post') or not hasattr(post.post, 'record'):
+                return 0
+            
+            record = post.post.record
+            if not hasattr(record, 'embed') or not record.embed:
+                return 0
+            
+            embed = record.embed
+            if hasattr(embed, 'images') and embed.images:
+                return len(embed.images)
+            
+            return 0
+        except Exception as e:
+            logger.debug(f"Error getting image count: {e}")
+            return 0
         
         if expired_keys:
             logger.debug(f"Cleaned up {len(expired_keys)} expired cache entries")
@@ -150,7 +258,9 @@ class BlueskyBot:
             'window_remaining_seconds': window_remaining,
             'cache_entries': len(self._timeline_cache),
             'consecutive_errors': self._consecutive_errors,
-            'last_api_call_ago_seconds': current_time - self._last_api_call if self._last_api_call > 0 else None
+            'last_api_call_ago_seconds': current_time - self._last_api_call if self._last_api_call > 0 else None,
+            'media_user_cache_entries': len(self._media_user_cache),
+            'media_feed_uris_configured': len(self._media_feed_uris)
         }
     
     def reset_api_stats(self):
@@ -158,8 +268,43 @@ class BlueskyBot:
         self._api_call_count = 0
         self._api_call_window_start = time.time()
         self._consecutive_errors = 0
-        self._timeline_cache.clear()
-        logger.info("API usage statistics reset")
+    
+    def get_media_user_stats(self) -> Dict[str, Any]:
+        """Get statistics about cached media users"""
+        current_time = time.time()
+        active_users = 0
+        expired_users = 0
+        
+        for user_handle, cache_entry in self._media_user_cache.items():
+            if current_time - cache_entry['timestamp'] > self._media_user_cache_ttl:
+                expired_users += 1
+            else:
+                active_users += 1
+        
+        return {
+            'total_cached_users': len(self._media_user_cache),
+            'active_cached_users': active_users,
+            'expired_cached_users': expired_users,
+            'cache_ttl_seconds': self._media_user_cache_ttl,
+            'media_threshold': self._media_user_threshold
+        }
+    
+    def add_media_feed_uri(self, feed_uri: str):
+        """Add a custom media feed URI to the list of feeds to try"""
+        if feed_uri not in self._media_feed_uris:
+            self._media_feed_uris.append(feed_uri)
+            logger.info(f"Added media feed URI: {feed_uri}")
+    
+    def remove_media_feed_uri(self, feed_uri: str):
+        """Remove a custom media feed URI from the list"""
+        if feed_uri in self._media_feed_uris:
+            self._media_feed_uris.remove(feed_uri)
+            logger.info(f"Removed media feed URI: {feed_uri}")
+    
+    def clear_media_feed_uris(self):
+        """Clear all custom media feed URIs"""
+        self._media_feed_uris.clear()
+        logger.info("Cleared all media feed URIs")
         
     def get_ssm_parameter(self, parameter_name: str) -> str:
         """Fetch parameter from AWS SSM Parameter Store with environment variable fallback"""
@@ -542,24 +687,67 @@ URI: {post.post.uri}
                 if item is not None:
                     embeds.append(item)
         
-        # Handle external links with images
+        # Handle external links with thumbnails (website cards)
         elif hasattr(embed, 'external') and embed.external:
             external = embed.external
             if hasattr(external, 'thumb') and external.thumb:
-                filename = f"external_{post.post.uri.split('/')[-1]}.jpg"
-                image_path = self.download_image(external.thumb, filename)
+                # Extract the blob reference from the thumb
+                thumb_ref = None
+                if hasattr(external.thumb, 'ref') and hasattr(external.thumb.ref, 'link'):
+                    thumb_ref = external.thumb.ref.link
+                elif hasattr(external.thumb, 'ref') and hasattr(external.thumb.ref, '$link'):
+                    thumb_ref = external.thumb.ref['$link']
                 
-                if image_path:
-                    image_info = self.get_image_info(image_path)
-                    embeds.append({
-                        'type': 'external',
-                        'url': external.uri,
-                        'title': external.title if hasattr(external, 'title') else '',
-                        'description': external.description if hasattr(external, 'description') else '',
-                        'thumb_path': image_path,
-                        'filename': filename,
-                        'info': image_info
-                    })
+                if thumb_ref:
+                    # Construct the blob URL
+                    post_did = post.post.uri.split('/')[2]
+                    blob_url = f"https://bsky.social/xrpc/com.atproto.sync.getBlob?did={post_did}&cid={thumb_ref}"
+                    
+                    filename = f"external_{post.post.uri.split('/')[-1]}.jpg"
+                    image_path = self.download_image(blob_url, filename)
+                    
+                    if image_path:
+                        image_info = self.get_image_info(image_path)
+                        embeds.append({
+                            'type': 'external',
+                            'url': external.uri if hasattr(external, 'uri') else '',
+                            'title': external.title if hasattr(external, 'title') else '',
+                            'description': external.description if hasattr(external, 'description') else '',
+                            'thumb_path': image_path,
+                            'filename': filename,
+                            'info': image_info
+                        })
+        
+        # Handle video embeds (if they exist)
+        elif hasattr(embed, 'video') and embed.video:
+            video = embed.video
+            if hasattr(video, 'thumb') and video.thumb:
+                # Extract the blob reference from the thumb
+                thumb_ref = None
+                if hasattr(video.thumb, 'ref') and hasattr(video.thumb.ref, 'link'):
+                    thumb_ref = video.thumb.ref.link
+                elif hasattr(video.thumb, 'ref') and hasattr(video.thumb.ref, '$link'):
+                    thumb_ref = video.thumb.ref['$link']
+                
+                if thumb_ref:
+                    # Construct the blob URL
+                    post_did = post.post.uri.split('/')[2]
+                    blob_url = f"https://bsky.social/xrpc/com.atproto.sync.getBlob?did={post_did}&cid={thumb_ref}"
+                    
+                    filename = f"video_{post.post.uri.split('/')[-1]}.jpg"
+                    image_path = self.download_image(blob_url, filename)
+                    
+                    if image_path:
+                        image_info = self.get_image_info(image_path)
+                        embeds.append({
+                            'type': 'video',
+                            'url': video.uri if hasattr(video, 'uri') else '',
+                            'title': video.title if hasattr(video, 'title') else '',
+                            'description': video.description if hasattr(video, 'description') else '',
+                            'thumb_path': image_path,
+                            'filename': filename,
+                            'info': image_info
+                        })
         
         return embeds
     
@@ -580,6 +768,12 @@ URI: {post.post.uri}
                     print(f"      Local path: {embed['local_path']}")
                 elif embed['type'] == 'external':
                     print(f"  🔗 External link: {embed['url']}")
+                    print(f"      Title: {embed['title']}")
+                    print(f"      Description: {embed['description']}")
+                    print(f"      Thumbnail: {embed['filename']}")
+                    print(f"      Thumbnail path: {embed['thumb_path']}")
+                elif embed['type'] == 'video':
+                    print(f"  🎥 Video: {embed['url']}")
                     print(f"      Title: {embed['title']}")
                     print(f"      Description: {embed['description']}")
                     print(f"      Thumbnail: {embed['filename']}")
@@ -624,40 +818,135 @@ URI: {post.post.uri}
             
             return []
     
+    def fetch_media_feed(self, limit: int = 50, cursor: Optional[str] = None) -> List[models.AppBskyFeedDefs.FeedViewPost]:
+        """Fetch from custom media-focused feeds if available, fallback to optimized timeline"""
+        try:
+            # Try custom media feeds first
+            for feed_uri in self._media_feed_uris:
+                try:
+                    if not self._check_rate_limit():
+                        logger.warning("Rate limit exceeded, cannot fetch media feed")
+                        return []
+                    
+                    feed = self.client.app.bsky.feed.get_feed(
+                        feed=feed_uri,
+                        limit=limit,
+                        cursor=cursor
+                    )
+                    self._record_api_call()
+                    
+                    logger.info(f"Successfully fetched from custom media feed: {feed_uri}")
+                    return feed.feed
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to fetch from custom feed {feed_uri}: {e}")
+                    continue
+            
+            # Fallback to optimized timeline with reliable algorithm
+            logger.info("No custom media feeds available, using optimized timeline")
+            return self.fetch_timeline(limit=limit, cursor=cursor, algorithm='home')
+            
+        except Exception as e:
+            logger.error(f"Error fetching media feed: {e}")
+            return []
+    
+    def fetch_posts_from_media_users(self, user_handles: List[str], limit: int = 10) -> List[models.AppBskyFeedDefs.FeedViewPost]:
+        """Fetch posts from users known to post media frequently"""
+        posts = []
+        
+        for handle in user_handles:
+            try:
+                # Check if user is cached as media user
+                if not self._is_media_user_cached(handle):
+                    # Analyze user's media ratio
+                    media_ratio = self._analyze_user_media_ratio(handle)
+                    self._cache_media_user(handle, media_ratio > self._media_user_threshold)
+                
+                # Only fetch from users who frequently post media
+                if self._is_media_user_cached(handle):
+                    if not self._check_rate_limit():
+                        logger.warning("Rate limit exceeded, cannot fetch user posts")
+                        break
+                    
+                    user_posts = self.client.app.bsky.feed.get_author_feed(
+                        actor=handle,
+                        limit=limit
+                    )
+                    self._record_api_call()
+                    
+                    # Filter for media posts
+                    for post in user_posts.feed:
+                        if self._has_media(post):
+                            posts.append(post)
+                            if len(posts) >= limit:
+                                break
+                
+                if len(posts) >= limit:
+                    break
+                    
+            except Exception as e:
+                logger.warning(f"Failed to fetch posts from {handle}: {e}")
+                continue
+        
+        return posts[:limit]
+    
     def fetch_posts_with_images(self, target_count: int = 5, max_fetches: int = 10) -> List[models.AppBskyFeedDefs.FeedViewPost]:
-        """Fetch posts until we have a good number of posts with images"""
+        """Fetch posts until we have a good number of posts with images - OPTIMIZED VERSION"""
         import time
         
         posts_with_images = []
         cursor = None
         fetch_count = 0
         
-        print(f"🔍 Searching for {target_count} posts with images...")
+        print(f"🔍 Searching for {target_count} posts with images (optimized)...")
         
+        # Try media feed first for better efficiency
+        try:
+            media_feed = self.fetch_media_feed(limit=target_count * 2, cursor=cursor)
+            if media_feed:
+                for post in media_feed:
+                    if self._has_media(post):
+                        posts_with_images.append(post)
+                        print(f"📸 Found post with media from custom feed - {len(posts_with_images)}/{target_count}")
+                        if len(posts_with_images) >= target_count:
+                            break
+                
+                if len(posts_with_images) >= target_count:
+                    print(f"✅ Found {len(posts_with_images)} posts with images from custom media feed")
+                    return posts_with_images[:target_count]
+        except Exception as e:
+            logger.warning(f"Custom media feed failed, falling back to timeline: {e}")
+        
+        # Fallback to optimized timeline fetching
         while len(posts_with_images) < target_count and fetch_count < max_fetches:
             try:
-                # Use the optimized fetch_timeline method with caching and rate limiting
-                timeline_feed = self.fetch_timeline(limit=20, cursor=cursor, algorithm='home')
+                # Use appropriate batch size - ensure we fetch enough posts to find media
+                remaining_needed = target_count - len(posts_with_images)
+                batch_size = max(self._media_focused_batch_size, remaining_needed * 3)  # Fetch 3x what we need to account for non-media posts
+                timeline_feed = self.fetch_timeline(limit=batch_size, cursor=cursor, algorithm='home')
                 
                 if not timeline_feed:
-                    print("No more posts available")
+                    print("No more posts available in timeline")
                     break
                 
                 # Get cursor from cache for next iteration
-                cached_data = self._get_cached_timeline(20, cursor, 'home')
+                cached_data = self._get_cached_timeline(batch_size, cursor, 'home')
                 if cached_data:
                     cursor = cached_data.get('cursor')
                 
-                # Check each post for images
+                # Check each post for images with early exit
                 for post in timeline_feed:
-                    if hasattr(post.post.record, 'embed') and post.post.record.embed:
-                        embed = post.post.record.embed
-                        if hasattr(embed, 'images') and embed.images:
-                            posts_with_images.append(post)
-                            print(f"📸 Found post with {len(embed.images)} image(s) - {len(posts_with_images)}/{target_count}")
-                            
-                            if len(posts_with_images) >= target_count:
-                                break
+                    if self._has_media(post):
+                        posts_with_images.append(post)
+                        print(f"📸 Found post with media - {len(posts_with_images)}/{target_count}")
+                        
+                        # Early exit when target reached
+                        if len(posts_with_images) >= target_count:
+                            break
+                
+                # Early exit if we have enough posts
+                if len(posts_with_images) >= target_count:
+                    break
                 
                 # Update cursor for next fetch
                 if cached_data and cached_data.get('cursor'):
@@ -679,6 +968,10 @@ URI: {post.post.uri}
                 break
         
         print(f"✅ Found {len(posts_with_images)} posts with images after {fetch_count} fetches")
+        if len(posts_with_images) < target_count:
+            print(f"⚠️  Warning: Only found {len(posts_with_images)} posts, requested {target_count}")
+            print(f"   - Fetches attempted: {fetch_count}/{max_fetches}")
+            print(f"   - Timeline exhausted: {cursor is None}")
         return posts_with_images
     
     def format_post_for_web(self, post: models.AppBskyFeedDefs.FeedViewPost) -> Dict[str, Any]:
@@ -861,6 +1154,137 @@ URI: {post.post.uri}
         except Exception as e:
             logger.warning(f"Failed to store reply for analytics: {e}")
     
+    def fetch_posts_with_images_web_filtered(self, target_count: int, max_fetches: int = 300, 
+                                           max_posts_per_user: int = 1, start_cursor: Optional[str] = None,
+                                           seen_post_uris: Optional[Set[str]] = None,
+                                           reply_filter_threshold: int = 0,
+                                           replied_post_uris: Optional[List[str]] = None,
+                                           followed_accounts: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Fetch posts with images, applying filters during fetch to ensure we get enough posts"""
+        try:
+            if not self.client:
+                raise Exception("Not authenticated")
+            
+            if seen_post_uris is None:
+                seen_post_uris = set()
+            
+            if replied_post_uris is None:
+                replied_post_uris = []
+            
+            if followed_accounts is None:
+                followed_accounts = []
+            
+            replied_post_uris_set = set(replied_post_uris)
+            followed_accounts_set = set(followed_accounts)
+            
+            # Get reply analytics if threshold filtering is needed
+            reply_analytics = {}
+            if reply_filter_threshold > 0:
+                analytics_result = self.get_reply_analytics(days=7, limit=20)
+                if analytics_result.get('success'):
+                    reply_analytics = analytics_result.get('replies_per_user', {})
+            
+            posts = []
+            cursor = start_cursor
+            total_checked = 0
+            fetch_count = 0
+            
+            while len(posts) < target_count and fetch_count < max_fetches:
+                fetch_count += 1
+                
+                # Fetch a batch of posts
+                batch_result = self.fetch_posts_with_images_web_paginated(
+                    target_count=min(target_count * 2, 18),  # Fetch more than needed
+                    max_fetches=50,  # Smaller batches for filtering
+                    max_posts_per_user=max_posts_per_user,
+                    start_cursor=cursor,
+                    seen_post_uris=seen_post_uris
+                )
+                
+                if not batch_result.get('posts'):
+                    break
+                
+                cursor = batch_result.get('cursor')
+                total_checked += batch_result.get('total_checked', 0)
+                
+                # Apply filters to the batch
+                filtered_batch = []
+                for post in batch_result['posts']:
+                    # Check if already replied to
+                    if post.get('post', {}).get('uri') in replied_post_uris_set:
+                        continue
+                    
+                    # Check if author is in followed accounts (if filtering is enabled)
+                    if followed_accounts_set:
+                        author_handle = post.get('author', {}).get('handle')
+                        if author_handle and author_handle not in followed_accounts_set:
+                            continue
+                    
+                    # Check reply count threshold
+                    if reply_filter_threshold > 0:
+                        author_handle = post.get('author', {}).get('handle')
+                        if author_handle:
+                            reply_count = reply_analytics.get(author_handle, 0)
+                            if reply_count > reply_filter_threshold:
+                                continue
+                    
+                    # Post passed all filters
+                    filtered_batch.append(post)
+                    if len(posts) + len(filtered_batch) >= target_count:
+                        break
+                
+                posts.extend(filtered_batch)
+                
+                # Update seen posts
+                for post in batch_result['posts']:
+                    if 'post' in post and 'uri' in post['post']:
+                        seen_post_uris.add(post['post']['uri'])
+            
+            # Trim to exact target count
+            posts = posts[:target_count]
+            
+            return {
+                'posts': posts,
+                'cursor': cursor,
+                'total_checked': total_checked,
+                'fetch_count': fetch_count,
+                'seen_uris': seen_post_uris
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in fetch_posts_with_images_web_filtered: {e}")
+            return {
+                'posts': [],
+                'cursor': None,
+                'total_checked': 0,
+                'fetch_count': 0,
+                'seen_uris': seen_post_uris or set(),
+                'error': str(e)
+            }
+    
+    def get_replied_post_uris(self) -> List[str]:
+        """Get list of post URIs that have been replied to"""
+        try:
+            replies_file = os.path.join(os.path.dirname(__file__), '..', 'replies_tracking.json')
+            
+            if not os.path.exists(replies_file):
+                return []
+            
+            with open(replies_file, 'r', encoding='utf-8') as f:
+                replies_data = json.load(f)
+            
+            # Extract unique post URIs
+            replied_uris = set()
+            for reply in replies_data:
+                if 'post_uri' in reply:
+                    replied_uris.add(reply['post_uri'])
+            
+            return list(replied_uris)
+            
+        except Exception as e:
+            logger.warning(f"Failed to get replied post URIs: {e}")
+            return []
+    
     def get_reply_analytics(self, days: int = 3, limit: int = 5) -> Dict[str, Any]:
         """Get analytics about replies posted in the last N days by fetching from Bluesky"""
         try:
@@ -977,19 +1401,31 @@ URI: {post.post.uri}
         
         while len(posts_with_images) < target_count and fetch_count < max_fetches:
             try:
+                # For pagination, we need to make fresh API calls to get new posts
+                # Don't use cache when we have a cursor (fetch more scenario)
+                if cursor:
+                    print(f"🔄 Making fresh API call for pagination (cursor: {cursor[:20]}...)")
+                    # Clear cache for this specific request to force fresh data
+                    cache_key = self._get_cache_key('get_timeline', limit=self._timeline_batch_size, cursor=cursor, algorithm='home')
+                    if cache_key in self._timeline_cache:
+                        del self._timeline_cache[cache_key]
+                
                 # Fetch a batch of posts from HOME timeline (followed users only)
-                # Use the optimized fetch_timeline method with caching and rate limiting
-                timeline_feed = self.fetch_timeline(limit=self._timeline_batch_size, cursor=cursor, algorithm='home')
+                # Try media feed first, fallback to timeline
+                timeline_feed = self.fetch_media_feed(limit=self._timeline_batch_size, cursor=cursor)
+                if not timeline_feed:
+                    timeline_feed = self.fetch_timeline(limit=self._timeline_batch_size, cursor=cursor, algorithm='home')
                 fetch_count += 1  # Always increment fetch count when we attempt to fetch
                 
                 if not timeline_feed:
                     print("No more posts available in home timeline (followed users)")
                     break
                 
-                # Get cursor from cache if available
+                # Get cursor from cache (should be fresh now)
                 cached_data = self._get_cached_timeline(self._timeline_batch_size, cursor, 'home')
                 if cached_data:
                     cursor = cached_data.get('cursor')
+                    print(f"📍 Updated cursor: {cursor[:20] if cursor else 'None'}...")
                 
                 # Check each post for images and deduplication
                 for post in timeline_feed:
@@ -999,7 +1435,7 @@ URI: {post.post.uri}
                     
                     # Skip if we've already seen this post
                     if post_uri in seen_uris:
-                        print(f"⏭️  Skipping already seen post from {user_handle}")
+                        print(f"⏭️  Skipping already seen post from {user_handle} (URI: {post_uri[:30]}...)")
                         continue
                     
                     # Note: We include reposts from followed users since they appear in our home timeline
@@ -1011,11 +1447,8 @@ URI: {post.post.uri}
                         print(f"⏭️  Skipping post from {user_handle} (already have {user_post_counts[user_handle]} posts)")
                         continue
                     
-                    # Check if post has images
-                    has_images = (hasattr(post.post.record, 'embed') and 
-                                post.post.record.embed and 
-                                hasattr(post.post.record.embed, 'images') and 
-                                post.post.record.embed.images)
+                    # Check if post has images using optimized method
+                    has_images = self._has_media(post)
                     
                     if has_images:
                         try:
@@ -1027,8 +1460,10 @@ URI: {post.post.uri}
                             seen_uris.add(post_uri)
                             
                             post_type = "repost" if hasattr(post, 'reason') and post.reason else "original"
-                            print(f"📸 Found {post_type} post with {len(post.post.record.embed.images)} image(s) from {user_handle} ({user_post_counts[user_handle]}/{max_posts_per_user}) - {len(posts_with_images)}/{target_count} total posts")
+                            image_count = self._get_safe_image_count(post)
+                            print(f"📸 Found {post_type} post with {image_count} image(s) from {user_handle} ({user_post_counts[user_handle]}/{max_posts_per_user}) - {len(posts_with_images)}/{target_count} total posts")
                             
+                            # Early exit when target reached
                             if len(posts_with_images) >= target_count:
                                 break
                                 
@@ -1061,6 +1496,13 @@ URI: {post.post.uri}
             print(f"📊 User distribution: {dict(user_post_counts)}")
         
         print(f"✅ Found {len(posts_with_images)} posts with images from FOLLOWED USERS after checking {total_posts_checked} total posts in {fetch_count} batches")
+        print(f"   - Final cursor: {cursor[:20] if cursor else 'None'}...")
+        print(f"   - Seen URIs count: {len(seen_uris)}")
+        if len(posts_with_images) < target_count:
+            print(f"⚠️  Warning: Only found {len(posts_with_images)} posts, requested {target_count}")
+            print(f"   - Fetches attempted: {fetch_count}/{max_fetches}")
+            print(f"   - Timeline exhausted: {cursor is None}")
+            print(f"   - User post limits: {max_posts_per_user} per user")
         
         return {
             'posts': posts_with_images,
@@ -1090,7 +1532,10 @@ URI: {post.post.uri}
             try:
                 # Fetch a batch of posts from HOME timeline (followed users only)
                 # Use the optimized fetch_timeline method with caching and rate limiting
-                timeline_feed = self.fetch_timeline(limit=self._timeline_batch_size, cursor=cursor, algorithm='home')
+                # Try media feed first, fallback to timeline
+                timeline_feed = self.fetch_media_feed(limit=self._timeline_batch_size, cursor=cursor)
+                if not timeline_feed:
+                    timeline_feed = self.fetch_timeline(limit=self._timeline_batch_size, cursor=cursor, algorithm='home')
                 
                 if not timeline_feed:
                     print("No more posts available in home timeline (followed users)")
@@ -1115,11 +1560,8 @@ URI: {post.post.uri}
                         print(f"⏭️  Skipping post from {user_handle} (already have {user_post_counts[user_handle]} posts)")
                         continue
                     
-                    # Check if post has images
-                    has_images = (hasattr(post.post.record, 'embed') and 
-                                post.post.record.embed and 
-                                hasattr(post.post.record.embed, 'images') and 
-                                post.post.record.embed.images)
+                    # Check if post has images using optimized method
+                    has_images = self._has_media(post)
                     
                     if has_images:
                         try:
@@ -1130,8 +1572,10 @@ URI: {post.post.uri}
                             user_post_counts[user_handle] = user_post_counts.get(user_handle, 0) + 1
                             
                             post_type = "repost" if hasattr(post, 'reason') and post.reason else "original"
-                            print(f"📸 Found {post_type} post with {len(post.post.record.embed.images)} image(s) from {user_handle} ({user_post_counts[user_handle]}/{max_posts_per_user}) - {len(posts_with_images)}/{target_count} total posts")
+                            image_count = self._get_safe_image_count(post)
+                            print(f"📸 Found {post_type} post with {image_count} image(s) from {user_handle} ({user_post_counts[user_handle]}/{max_posts_per_user}) - {len(posts_with_images)}/{target_count} total posts")
                             
+                            # Early exit when target reached
                             if len(posts_with_images) >= target_count:
                                 break
                                 
@@ -1166,6 +1610,11 @@ URI: {post.post.uri}
             print(f"📊 User distribution: {dict(user_post_counts)}")
         
         print(f"✅ Found {len(posts_with_images)} posts with images from FOLLOWED USERS after checking {total_posts_checked} total posts in {fetch_count} batches")
+        if len(posts_with_images) < target_count:
+            print(f"⚠️  Warning: Only found {len(posts_with_images)} posts, requested {target_count}")
+            print(f"   - Fetches attempted: {fetch_count}/{max_fetches}")
+            print(f"   - Timeline exhausted: {cursor is None}")
+            print(f"   - User post limits: {max_posts_per_user} per user")
         return posts_with_images
     
     def fetch_posts_with_images_web_stream(self, target_count: int = 5, max_fetches: int = 20, max_posts_per_user: int = 2, progress_callback=None) -> List[Dict[str, Any]]:
@@ -1190,7 +1639,10 @@ URI: {post.post.uri}
             try:
                 # Fetch a batch of posts from HOME timeline (followed users only)
                 # Use the optimized fetch_timeline method with caching and rate limiting
-                timeline_feed = self.fetch_timeline(limit=self._timeline_batch_size, cursor=cursor, algorithm='home')
+                # Try media feed first, fallback to timeline
+                timeline_feed = self.fetch_media_feed(limit=self._timeline_batch_size, cursor=cursor)
+                if not timeline_feed:
+                    timeline_feed = self.fetch_timeline(limit=self._timeline_batch_size, cursor=cursor, algorithm='home')
                 
                 if not timeline_feed:
                     if progress_callback:
@@ -1221,11 +1673,8 @@ URI: {post.post.uri}
                                             posts_found=len(posts_with_images), posts_checked=total_posts_checked, current_batch=fetch_count)
                         continue
                     
-                    # Check if post has images
-                    has_images = (hasattr(post.post.record, 'embed') and 
-                                post.post.record.embed and 
-                                hasattr(post.post.record.embed, 'images') and 
-                                post.post.record.embed.images)
+                    # Check if post has images using optimized method
+                    has_images = self._has_media(post)
                     
                     if has_images:
                         try:
@@ -1237,9 +1686,11 @@ URI: {post.post.uri}
                             
                             post_type = "repost" if hasattr(post, 'reason') and post.reason else "original"
                             if progress_callback:
-                                progress_callback(f"📸 Found {post_type} post with {len(post.post.record.embed.images)} image(s) from {user_handle} ({user_post_counts[user_handle]}/{max_posts_per_user}) - {len(posts_with_images)}/{target_count} total posts", 
+                                image_count = self._get_safe_image_count(post)
+                                progress_callback(f"📸 Found {post_type} post with {image_count} image(s) from {user_handle} ({user_post_counts[user_handle]}/{max_posts_per_user}) - {len(posts_with_images)}/{target_count} total posts", 
                                                 posts_found=len(posts_with_images), posts_checked=total_posts_checked, current_batch=fetch_count)
                             
+                            # Early exit when target reached
                             if len(posts_with_images) >= target_count:
                                 break
                                 
@@ -1324,7 +1775,10 @@ URI: {post.post.uri}
             try:
                 # Fetch a batch of posts from HOME timeline (followed users only)
                 # Use the optimized fetch_timeline method with caching and rate limiting
-                timeline_feed = self.fetch_timeline(limit=self._timeline_batch_size, cursor=cursor, algorithm='home')
+                # Try media feed first, fallback to timeline
+                timeline_feed = self.fetch_media_feed(limit=self._timeline_batch_size, cursor=cursor)
+                if not timeline_feed:
+                    timeline_feed = self.fetch_timeline(limit=self._timeline_batch_size, cursor=cursor, algorithm='home')
                 
                 if not timeline_feed:
                     yield {
@@ -1370,11 +1824,8 @@ URI: {post.post.uri}
                         }
                         continue
                     
-                    # Check if post has images
-                    has_images = (hasattr(post.post.record, 'embed') and 
-                                post.post.record.embed and 
-                                hasattr(post.post.record.embed, 'images') and 
-                                post.post.record.embed.images)
+                    # Check if post has images using optimized method
+                    has_images = self._has_media(post)
                     
                     if has_images:
                         try:
@@ -1385,15 +1836,17 @@ URI: {post.post.uri}
                             user_post_counts[user_handle] = user_post_counts.get(user_handle, 0) + 1
                             
                             post_type = "repost" if hasattr(post, 'reason') and post.reason else "original"
+                            image_count = self._get_safe_image_count(post)
                             yield {
                                 'type': 'progress',
-                                'message': f"📸 Found {post_type} post with {len(post.post.record.embed.images)} image(s) from {user_handle} ({user_post_counts[user_handle]}/{max_posts_per_user}) - {len(posts_with_images)}/{target_count} total posts",
+                                'message': f"📸 Found {post_type} post with {image_count} image(s) from {user_handle} ({user_post_counts[user_handle]}/{max_posts_per_user}) - {len(posts_with_images)}/{target_count} total posts",
                                 'posts_found': len(posts_with_images),
                                 'posts_checked': total_posts_checked,
                                 'current_batch': fetch_count,
                                 'progress_percent': min(100, len(posts_with_images) / target_count * 100)
                             }
                             
+                            # Early exit when target reached
                             if len(posts_with_images) >= target_count:
                                 break
                                 
@@ -1488,19 +1941,22 @@ URI: {post.post.uri}
             'count': len(posts_with_images)
         }
     
+    def _authenticate_and_setup(self, handle: str):
+        """Common authentication and setup logic"""
+        # Get password from SSM
+        print("Fetching password from AWS SSM...")
+        password = self.get_ssm_parameter('BLUESKY_PASSWORD_BIKELIFE')
+        
+        # Authenticate
+        self.authenticate(handle, password)
+        
+        # Setup temp directory
+        self.temp_dir = self.setup_temp_directory()
+    
     def initialize(self, handle: str):
         """Initialize the bot with authentication"""
         try:
-            # Get password from SSM
-            print("Fetching password from AWS SSM...")
-            password = self.get_ssm_parameter('BLUESKY_PASSWORD_BIKELIFE')
-            
-            # Authenticate
-            self.authenticate(handle, password)
-            
-            # Setup temp directory
-            self.temp_dir = self.setup_temp_directory()
-            
+            self._authenticate_and_setup(handle)
             return True
         except Exception as e:
             print(f"Error initializing bot: {e}")
@@ -1509,15 +1965,7 @@ URI: {post.post.uri}
     def run(self, handle: str, target_posts_with_images: int = 5):
         """Main bot execution - fetches posts with images"""
         try:
-            # Get password from SSM
-            print("Fetching password from AWS SSM...")
-            password = self.get_ssm_parameter('BLUESKY_PASSWORD_BIKELIFE')
-            
-            # Authenticate
-            self.authenticate(handle, password)
-            
-            # Setup temp directory
-            self.temp_dir = self.setup_temp_directory()
+            self._authenticate_and_setup(handle)
             
             # Fetch posts with images
             posts_with_images = self.fetch_posts_with_images(target_posts_with_images)
@@ -1544,6 +1992,53 @@ URI: {post.post.uri}
             if self.temp_dir and os.path.exists(self.temp_dir):
                 print(f"\n🗑️  Temporary files are in: {self.temp_dir}")
                 print("   (Files will be cleaned up automatically by the system)")
+
+    def get_followed_accounts(self, limit: int = 1000) -> List[str]:
+        """Get list of account handles that the user follows"""
+        try:
+            if not self.client:
+                raise Exception("Not authenticated")
+            
+            followed_handles = []
+            cursor = None
+            
+            while len(followed_handles) < limit:
+                # Fetch follows
+                if cursor:
+                    follows_response = self.client.get_follows(
+                        actor=self.client.me.did,
+                        limit=min(100, limit - len(followed_handles)),
+                        cursor=cursor
+                    )
+                else:
+                    follows_response = self.client.get_follows(
+                        actor=self.client.me.did,
+                        limit=min(100, limit - len(followed_handles))
+                    )
+                
+                if not follows_response.follows:
+                    break
+                
+                # Extract handles
+                for follow in follows_response.follows:
+                    if hasattr(follow, 'handle') and follow.handle:
+                        followed_handles.append(follow.handle)
+                
+                # Check if we have more to fetch
+                if not hasattr(follows_response, 'cursor') or not follows_response.cursor:
+                    break
+                
+                cursor = follows_response.cursor
+                
+                # Rate limiting
+                time.sleep(0.1)
+            
+            logger.info(f"Fetched {len(followed_handles)} followed accounts")
+            return followed_handles
+            
+        except Exception as e:
+            logger.error(f"Error fetching followed accounts: {e}")
+            return []
 
 
 # CLI functionality removed - this is now a web-only application

@@ -12,7 +12,9 @@ const AppState = {
     previousPosts: [],
     wasFetchMore: false,
     sessionId: localStorage.getItem('sessionId') || generateSessionId(),
-    replyAnalytics: null  // Store analytics data for filtering
+    replyAnalytics: null,  // Store analytics data for filtering
+    repliedPostUris: new Set(),  // Store set of post URIs that have been replied to
+    followedAccounts: new Set()  // Store set of account handles that are followed
 };
 
 // Generate a unique session ID
@@ -70,39 +72,89 @@ const Utils = {
         };
     },
 
-    // Load image with retry logic
-    loadImageWithRetry: function(imgElement, src, maxRetries = 3, retryDelay = 1000) {
+    // Load image with exponential retry logic
+    loadImageWithRetry: function(imgElement, src, maxRetries = 8, baseDelay = 500) {
         return new Promise((resolve, reject) => {
             let retryCount = 0;
             
             const attemptLoad = () => {
                 const img = new Image();
                 
+                // Set timeout for individual load attempt (30 seconds)
+                const timeout = setTimeout(() => {
+                    img.onload = null;
+                    img.onerror = null;
+                    console.warn(`⏰ Image load timeout: ${src}`);
+                    img.onerror();
+                }, 30000);
+                
                 img.onload = () => {
+                    clearTimeout(timeout);
+                    // Set the src attribute on the actual element
                     imgElement.src = src;
-                    imgElement.classList.remove('loading', 'error');
+                    imgElement.classList.remove('loading', 'error', 'retrying');
                     imgElement.classList.add('loaded');
+                    console.log(`✅ Image loaded successfully: ${src}`);
                     resolve(imgElement);
                 };
                 
                 img.onerror = () => {
+                    clearTimeout(timeout);
                     retryCount++;
                     if (retryCount < maxRetries) {
-                        console.warn(`Image load failed, retrying... (${retryCount}/${maxRetries})`);
+                        // Exponential backoff: 500ms, 1s, 2s, 4s, 8s, 16s, 32s, 64s
+                        const delay = baseDelay * Math.pow(2, retryCount - 1);
+                        console.warn(`🔄 Image load failed, retrying ${retryCount}/${maxRetries} in ${delay}ms: ${src}`);
+                        imgElement.classList.remove('loading');
                         imgElement.classList.add('retrying');
-                        setTimeout(attemptLoad, retryDelay * retryCount); // Exponential backoff
+                        
+                        // Show retry indicator
+                        imgElement.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Retrying... (${retryCount}/${maxRetries})`;
+                        imgElement.style.display = 'flex';
+                        imgElement.style.alignItems = 'center';
+                        imgElement.style.justifyContent = 'center';
+                        imgElement.style.minHeight = '200px';
+                        imgElement.style.color = '#6c757d';
+                        imgElement.style.fontSize = '0.9rem';
+                        imgElement.style.textAlign = 'center';
+                        
+                        setTimeout(attemptLoad, delay);
                     } else {
-                        console.error(`Image load failed after ${maxRetries} attempts:`, src);
+                        console.error(`❌ Image load failed after ${maxRetries} attempts:`, src);
                         imgElement.classList.remove('loading', 'retrying');
                         imgElement.classList.add('error');
+                        
+                        // Add a placeholder or error message with retry option
+                        imgElement.style.background = '#f8f9fa';
+                        imgElement.style.border = '2px dashed #dee2e6';
+                        imgElement.style.display = 'flex';
+                        imgElement.style.alignItems = 'center';
+                        imgElement.style.justifyContent = 'center';
+                        imgElement.style.minHeight = '200px';
+                        imgElement.style.color = '#6c757d';
+                        imgElement.style.fontSize = '0.9rem';
+                        imgElement.style.textAlign = 'center';
+                        imgElement.style.cursor = 'pointer';
+                        
+                        // Add error text
+                        const errorText = document.createElement('div');
+                        errorText.innerHTML = '⚠️ Image failed to load<br><small>Click to retry</small>';
+                        errorText.style.pointerEvents = 'none';
+                        imgElement.appendChild(errorText);
+                        
                         reject(new Error(`Failed to load image after ${maxRetries} attempts`));
                     }
                 };
                 
+                // Set the src to trigger loading
                 img.src = src;
             };
             
+            // Ensure the element has the loading class
             imgElement.classList.add('loading');
+            imgElement.classList.remove('error', 'retrying', 'loaded');
+            
+            // Start the loading process
             attemptLoad();
         });
     }
@@ -181,6 +233,14 @@ const ApiService = {
         return this.request(`/api/reply-analytics?days=${days}&limit=${limit}`);
     },
 
+    async getRepliedPosts() {
+        return this.request('/api/replied-posts');
+    },
+
+    async getFollowedAccounts() {
+        return this.request('/api/followed-accounts');
+    },
+
     async likePost(postUri) {
         return this.request('/api/like', {
             method: 'POST',
@@ -233,6 +293,11 @@ const UI = {
                 progressDetails = `Processed ${currentBatch} batches • No new posts with images found`;
             } else {
                 progressDetails = `Searching for posts with images...`;
+            }
+            
+            // Add special handling for fetch more operations
+            if (AppState.wasFetchMore) {
+                progressDetails = `Fetching additional posts... • ${progressDetails}`;
             }
             
             progressText.innerHTML = `
@@ -322,10 +387,48 @@ const UI = {
         }
     },
 
+    // Truncate text to first sentence or two
+    truncateText: function(text, maxLength = 150) {
+        if (!text || text.length <= maxLength) {
+            return text;
+        }
+        
+        // Try to break at sentence boundaries first
+        const sentences = text.split(/[.!?]+/);
+        let result = '';
+        
+        for (let i = 0; i < sentences.length; i++) {
+            const sentence = sentences[i].trim();
+            if (sentence && result.length + sentence.length + 1 <= maxLength) {
+                result += (result ? '. ' : '') + sentence;
+            } else {
+                break;
+            }
+        }
+        
+        // If we have a good sentence break, use it
+        if (result.length > 50) {
+            return result + '...';
+        }
+        
+        // Otherwise, just truncate at word boundary
+        const truncated = text.substring(0, maxLength);
+        const lastSpace = truncated.lastIndexOf(' ');
+        if (lastSpace > maxLength * 0.8) {
+            return truncated.substring(0, lastSpace) + '...';
+        }
+        
+        return truncated + '...';
+    },
+
     // Create post card HTML
     createPostCard: function(post, index) {
         const postDate = Utils.formatDate(post.post.indexed_at);
-        const images = post.embeds.filter(embed => embed.type === 'image');
+        const images = post.embeds.filter(embed => 
+            embed.type === 'image' || 
+            (embed.type === 'external' && embed.thumb_path) ||
+            (embed.type === 'video' && embed.thumb_path)
+        );
         
         // Check if this post is already liked (we'll implement this later)
         const isLiked = post.post.is_liked || false;
@@ -341,14 +444,12 @@ const UI = {
                         </div>
                         <div class="d-flex align-items-center gap-2">
                             <small class="text-muted me-2">${postDate}</small>
-                            ${images.length > 0 ? `
-                                <button class="btn btn-outline-success btn-sm ai-reply-btn" 
-                                        onclick="UI.generateAiReply(${index})" 
-                                        title="Generate themed AI reply"
-                                        data-post-index="${index}">
-                                    <i class="fas fa-robot"></i> AI Reply
-                                </button>
-                            ` : ''}
+                            <button class="btn btn-outline-success btn-sm ai-reply-btn" 
+                                    onclick="UI.generateAiReply(${index})" 
+                                    title="Generate themed AI reply"
+                                    data-post-index="${index}">
+                                <i class="fas fa-robot"></i> AI Reply
+                            </button>
                             <a href="https://bsky.app/profile/${post.author.handle}/post/${post.post.uri.split('/').pop()}" 
                                target="_blank" class="btn btn-outline-primary btn-sm" title="View on Bluesky">
                                 <i class="fas fa-external-link-alt"></i> View on Bluesky
@@ -359,7 +460,7 @@ const UI = {
                 <div class="card-body">
                     ${images.length > 0 ? this.createImagesSection(images, index) : ''}
                 </div>
-                ${post.post.text ? `<div class="card-text">${Utils.escapeHtml(post.post.text).replace(/\n/g, '<br>')}</div>` : ''}
+                ${post.post.text ? `<div class="card-text">${this.truncateText(Utils.escapeHtml(post.post.text).replace(/\n/g, '<br>'))}</div>` : ''}
                 <div class="engagement-metrics">
                     <div class="d-flex justify-content-between align-items-center">
                         <div class="engagement-stats">
@@ -390,7 +491,11 @@ const UI = {
             alt_text: img.alt_text || '',
             width: img.info?.width || 0,
             height: img.info?.height || 0,
-            file_size: img.info?.file_size || 0
+            file_size: img.info?.file_size || 0,
+            type: img.type || 'image',
+            url: img.url || '',
+            title: img.title || '',
+            description: img.description || ''
         }))));
 
         return `
@@ -400,20 +505,51 @@ const UI = {
                     <button class="carousel-btn left" type="button" aria-label="Previous image" onclick="UI.prevImage(${postIndex})">
                         <i class="fas fa-chevron-left"></i>
                     </button>` : ''}
-                    <img id="post-img-${postIndex}" 
-                         class="img-fluid rounded shadow-sm clickable-image loading" 
-                         alt="${Utils.escapeHtml(first.alt_text || '')}"
-                         data-filename="${first.filename}"
-                         data-alt-text="${Utils.escapeHtml(first.alt_text || '')}"
-                         data-src="${ApiService.getImageUrl(first.filename)}"
-                         style="cursor: pointer;"
-                         loading="lazy">
+                    <div class="position-relative">
+                        <img id="post-img-${postIndex}" 
+                             class="img-fluid rounded shadow-sm clickable-image loading" 
+                             alt="${Utils.escapeHtml(first.alt_text || '')}"
+                             data-filename="${first.filename}"
+                             data-alt-text="${Utils.escapeHtml(first.alt_text || '')}"
+                             data-src="${ApiService.getImageUrl(first.filename)}"
+                             style="cursor: pointer; min-height: 200px; background: #f0f0f0;"
+                             loading="lazy">
+                        ${first.type === 'external' ? `
+                            <div class="position-absolute top-0 end-0 m-2">
+                                <span class="badge bg-primary">
+                                    <i class="fas fa-external-link-alt me-1"></i>Link
+                                </span>
+                            </div>
+                            ${first.title ? `
+                                <div class="position-absolute bottom-0 start-0 end-0 p-2" style="background: linear-gradient(transparent, rgba(0,0,0,0.7)); border-radius: 0 0 0.375rem 0.375rem;">
+                                    <small class="text-white fw-bold">${Utils.escapeHtml(first.title)}</small>
+                                </div>
+                            ` : ''}
+                        ` : ''}
+                        ${first.type === 'video' ? `
+                            <div class="position-absolute top-0 end-0 m-2">
+                                <span class="badge bg-danger">
+                                    <i class="fas fa-play me-1"></i>Video
+                                </span>
+                            </div>
+                        ` : ''}
+                    </div>
                     ${hasMultiple ? `
                     <button class="carousel-btn right" type="button" aria-label="Next image" onclick="UI.nextImage(${postIndex})">
                         <i class="fas fa-chevron-right"></i>
                     </button>` : ''}
                 </div>
-                <div class="d-flex justify-content-end align-items-center mt-1">
+                <div class="d-flex justify-content-between align-items-center mt-1">
+                    <small class="text-muted">
+                        ${first.type === 'external' ? `
+                            <i class="fas fa-external-link-alt me-1"></i>External Link
+                            ${first.url ? ` • <a href="${first.url}" target="_blank" class="text-decoration-none">${Utils.escapeHtml(first.url)}</a>` : ''}
+                        ` : first.type === 'video' ? `
+                            <i class="fas fa-play me-1"></i>Video Content
+                        ` : `
+                            <i class="fas fa-image me-1"></i>Image
+                        `}
+                    </small>
                     <small id="meta-${postIndex}" class="text-muted">
                         ${hasMultiple ? `<span id="counter-${postIndex}">1</span>/${images.length} • ` : ''}${first.info?.width || 0}×${first.info?.height || 0} • ${Utils.formatFileSize(first.info?.file_size || 0)}
                     </small>
@@ -460,6 +596,7 @@ const UI = {
         imgEl.setAttribute('data-src', newSrc);
         
         // Load image with retry logic
+        console.log(`Loading carousel image: ${newSrc}`);
         Utils.loadImageWithRetry(imgEl, newSrc).catch(error => {
             console.error('Failed to load image in carousel:', error);
         });
@@ -501,8 +638,10 @@ const UI = {
             });
         });
         
-        // Initialize image loading for all images
-        this.initializeImageLoading();
+        // Initialize image loading for all images with a small delay to ensure DOM is ready
+        setTimeout(() => {
+            this.initializeImageLoading();
+        }, 100);
     },
 
     // Display posts progressively with animation (one by one)
@@ -530,8 +669,10 @@ const UI = {
                 
                 postsContainer.appendChild(postElement);
                 
-                // Initialize image loading for this post
-                this.initializeImageLoadingForPost(postElement);
+                // Initialize image loading for this post with a small delay
+                setTimeout(() => {
+                    this.initializeImageLoadingForPost(postElement);
+                }, 50);
                 
                 // Add click event listener to like button for this post
                 const likeButton = postElement.querySelector('.like-button');
@@ -578,8 +719,10 @@ const UI = {
             wrapper.innerHTML = this.createPostCard(post, idx);
             postsContainer.appendChild(wrapper);
             
-            // Initialize image loading for this post
-            this.initializeImageLoadingForPost(wrapper);
+            // Initialize image loading for this post with a small delay
+            setTimeout(() => {
+                this.initializeImageLoadingForPost(wrapper);
+            }, 50);
             
             // Add click event listener to like button for this post
             const likeButton = wrapper.querySelector('.like-button');
@@ -631,8 +774,10 @@ const UI = {
             wrapper.innerHTML = this.createPostCard(post, newPosts.length + idx);
             prevPostsGrid.appendChild(wrapper);
             
-            // Initialize image loading for this post
-            this.initializeImageLoadingForPost(wrapper);
+            // Initialize image loading for this post with a small delay
+            setTimeout(() => {
+                this.initializeImageLoadingForPost(wrapper);
+            }, 50);
             
             // Add click event listener to like button for this post
             const likeButton = wrapper.querySelector('.like-button');
@@ -647,12 +792,34 @@ const UI = {
     // Initialize image loading for all images
     initializeImageLoading: function() {
         const images = document.querySelectorAll('.clickable-image[data-src]');
-        images.forEach(img => {
+        console.log(`Found ${images.length} images to load`);
+        
+        // Also check for images without data-src but with filename
+        const imagesWithoutDataSrc = document.querySelectorAll('.clickable-image:not([data-src])');
+        if (imagesWithoutDataSrc.length > 0) {
+            console.warn(`Found ${imagesWithoutDataSrc.length} images without data-src attribute`);
+            imagesWithoutDataSrc.forEach((img, index) => {
+                const filename = img.getAttribute('data-filename');
+                if (filename) {
+                    const src = ApiService.getImageUrl(filename);
+                    console.log(`Setting data-src for image ${index + 1}: ${src}`);
+                    img.setAttribute('data-src', src);
+                    Utils.loadImageWithRetry(img, src).catch(error => {
+                        console.error('Failed to load image:', error);
+                    });
+                }
+            });
+        }
+        
+        images.forEach((img, index) => {
             const src = img.getAttribute('data-src');
             if (src) {
+                console.log(`Loading image ${index + 1}: ${src}`);
                 Utils.loadImageWithRetry(img, src).catch(error => {
                     console.error('Failed to load image:', error);
                 });
+            } else {
+                console.warn(`Image ${index + 1} has no data-src attribute`);
             }
         });
     },
@@ -660,12 +827,34 @@ const UI = {
     // Initialize image loading for a specific post element
     initializeImageLoadingForPost: function(postElement) {
         const images = postElement.querySelectorAll('.clickable-image[data-src]');
-        images.forEach(img => {
+        console.log(`Found ${images.length} images in post element to load`);
+        
+        // Also check for images without data-src but with filename
+        const imagesWithoutDataSrc = postElement.querySelectorAll('.clickable-image:not([data-src])');
+        if (imagesWithoutDataSrc.length > 0) {
+            console.warn(`Found ${imagesWithoutDataSrc.length} images without data-src in post element`);
+            imagesWithoutDataSrc.forEach((img, index) => {
+                const filename = img.getAttribute('data-filename');
+                if (filename) {
+                    const src = ApiService.getImageUrl(filename);
+                    console.log(`Setting data-src for post image ${index + 1}: ${src}`);
+                    img.setAttribute('data-src', src);
+                    Utils.loadImageWithRetry(img, src).catch(error => {
+                        console.error('Failed to load image:', error);
+                    });
+                }
+            });
+        }
+        
+        images.forEach((img, index) => {
             const src = img.getAttribute('data-src');
             if (src) {
+                console.log(`Loading post image ${index + 1}: ${src}`);
                 Utils.loadImageWithRetry(img, src).catch(error => {
                     console.error('Failed to load image:', error);
                 });
+            } else {
+                console.warn(`Post image ${index + 1} has no data-src attribute`);
             }
         });
     },
@@ -710,11 +899,12 @@ const UI = {
             return;
         }
 
-        const images = post.embeds.filter(embed => embed.type === 'image');
-        if (images.length === 0) {
-            console.error('No images found for post:', postIndex);
-            return;
-        }
+        const images = post.embeds.filter(embed => 
+            embed.type === 'image' || 
+            (embed.type === 'external' && embed.thumb_path) ||
+            (embed.type === 'video' && embed.thumb_path)
+        );
+        // AI Reply works for all posts, with or without images
 
         const aiReplyBtn = document.querySelector(`[data-post-index="${postIndex}"].ai-reply-btn`);
         if (!aiReplyBtn) {
@@ -729,7 +919,14 @@ const UI = {
 
         try {
             const imageFilenames = images.map(img => img.filename);
-            const imageAltTexts = images.map(img => img.alt_text || '');
+            const imageAltTexts = images.map(img => {
+                if (img.type === 'external') {
+                    return `External link: ${img.title || img.url || 'Link'}`;
+                } else if (img.type === 'video') {
+                    return `Video: ${img.title || 'Video content'}`;
+                }
+                return img.alt_text || '';
+            });
             const postText = post.post.text || '';
             
             // Get current theme configuration
@@ -875,9 +1072,6 @@ const UI = {
                             <button type="button" class="btn btn-warning" id="rerollBtn" onclick="UI.rerollAiReply()">
                                 <i class="fas fa-dice"></i> Roll Again
                             </button>
-                            <button type="button" class="btn btn-success" onclick="UI.copyAiReply()">
-                                <i class="fas fa-copy"></i> Copy Reply
-                            </button>
                             <button type="button" class="btn btn-primary" id="postReplyBtn" onclick="UI.postAiReply()">
                                 <i class="fas fa-paper-plane"></i> Post Reply
                             </button>
@@ -902,6 +1096,20 @@ const UI = {
             if (images && images.length > 0) {
                 imagesIncluded.style.display = '';
                 imagesIncludedCount.textContent = String(images.length);
+                
+                // Show breakdown of media types
+                const imageCount = images.filter(img => img.type === 'image').length;
+                const externalCount = images.filter(img => img.type === 'external').length;
+                const videoCount = images.filter(img => img.type === 'video').length;
+                
+                let typeBreakdown = [];
+                if (imageCount > 0) typeBreakdown.push(`${imageCount} image${imageCount > 1 ? 's' : ''}`);
+                if (externalCount > 0) typeBreakdown.push(`${externalCount} link${externalCount > 1 ? 's' : ''}`);
+                if (videoCount > 0) typeBreakdown.push(`${videoCount} video${videoCount > 1 ? 's' : ''}`);
+                
+                if (typeBreakdown.length > 1) {
+                    imagesIncludedCount.textContent = `${images.length} (${typeBreakdown.join(', ')})`;
+                }
             } else {
                 imagesIncluded.style.display = 'none';
             }
@@ -929,8 +1137,12 @@ const UI = {
 
         const post = AppState.posts[postIndex];
         if (!post) return;
-        const images = post.embeds.filter(embed => embed.type === 'image');
-        if (images.length === 0) return;
+        const images = post.embeds.filter(embed => 
+            embed.type === 'image' || 
+            (embed.type === 'external' && embed.thumb_path) ||
+            (embed.type === 'video' && embed.thumb_path)
+        );
+        // AI Reply works for all posts, with or without images
 
         const rerollBtn = document.getElementById('rerollBtn');
         const original = rerollBtn ? rerollBtn.innerHTML : '';
@@ -941,7 +1153,14 @@ const UI = {
 
         try {
             const imageFilenames = images.map(img => img.filename);
-            const imageAltTexts = images.map(img => img.alt_text || '');
+            const imageAltTexts = images.map(img => {
+                if (img.type === 'external') {
+                    return `External link: ${img.title || img.url || 'Link'}`;
+                } else if (img.type === 'video') {
+                    return `Video: ${img.title || 'Video content'}`;
+                }
+                return img.alt_text || '';
+            });
             const postText = post.post.text || '';
             const themeConfig = JSON.parse(localStorage.getItem('aiThemeConfig') || '{"theme": "cycling", "tone": "enthusiastic", "style": "conversational"}');
             const response = await ApiService.generateAiReply(postIndex, imageFilenames, postText, imageAltTexts, themeConfig);
@@ -957,23 +1176,6 @@ const UI = {
         }
     },
 
-    // Copy AI reply to clipboard
-    copyAiReply: function() {
-        const replyText = document.getElementById('aiReplyText').textContent;
-        navigator.clipboard.writeText(replyText).then(() => {
-            // Show success feedback
-            const copyBtn = document.querySelector('#aiReplyModal .btn-success');
-            const originalText = copyBtn.innerHTML;
-            copyBtn.innerHTML = '<i class="fas fa-check"></i> Copied!';
-            
-            setTimeout(() => {
-                copyBtn.innerHTML = originalText;
-            }, 2000);
-        }).catch(err => {
-            console.error('Failed to copy text: ', err);
-            this.showError('Failed to copy response to clipboard');
-        });
-    },
 
     // Post AI reply to Bluesky
     postAiReply: async function() {
@@ -1015,8 +1217,10 @@ const UI = {
             
             if (response.success) {
                 this.showSuccess('Reply posted successfully!');
-                // Refresh analytics
+                // Refresh analytics and replied posts
                 Analytics.loadAnalytics();
+                Analytics.loadRepliedPosts();
+                Analytics.loadFollowedAccounts();
                 // Close the modal
                 const bsModal = bootstrap.Modal.getInstance(modal);
                 if (bsModal) bsModal.hide();
@@ -1049,6 +1253,7 @@ const Analytics = {
                 console.log('Displaying analytics chart with data:', response.replies_per_user);
                 // Store analytics data in AppState for filtering
                 AppState.replyAnalytics = response.replies_per_user;
+                console.log('✅ Analytics data stored in AppState:', Object.keys(AppState.replyAnalytics).length, 'users');
                 this.displayAnalyticsChart(response.replies_per_user, response.total_replies);
                 // Update input max value based on actual data
                 App.updateReplyFilterInputMax();
@@ -1059,6 +1264,46 @@ const Analytics = {
         } catch (error) {
             console.error('Error loading analytics:', error);
             this.showAnalyticsError('Failed to load analytics: ' + error.message);
+        }
+    },
+
+    // Load replied posts for filtering
+    loadRepliedPosts: async function() {
+        try {
+            console.log('Loading replied posts...');
+            const response = await ApiService.getRepliedPosts();
+            console.log('Replied posts response:', response);
+            
+            if (response.success) {
+                console.log(`Loaded ${response.count} replied post URIs`);
+                // Store replied post URIs in AppState for filtering
+                AppState.repliedPostUris = new Set(response.replied_post_uris);
+                console.log('Replied posts loaded:', AppState.repliedPostUris);
+            } else {
+                console.error('Replied posts API returned error:', response.error);
+            }
+        } catch (error) {
+            console.error('Error loading replied posts:', error);
+        }
+    },
+
+    // Load followed accounts for filtering
+    loadFollowedAccounts: async function() {
+        try {
+            console.log('Loading followed accounts...');
+            const response = await ApiService.getFollowedAccounts();
+            console.log('Followed accounts response:', response);
+            
+            if (response.success) {
+                console.log(`Loaded ${response.count} followed accounts`);
+                // Store followed accounts in AppState for filtering
+                AppState.followedAccounts = new Set(response.followed_accounts);
+                console.log('Followed accounts loaded:', AppState.followedAccounts);
+            } else {
+                console.error('Followed accounts API returned error:', response.error);
+            }
+        } catch (error) {
+            console.error('Error loading followed accounts:', error);
         }
     },
     
@@ -1169,25 +1414,32 @@ const App = {
         // Load user info, posts, and check status
         this.loadUserInfo();
         // Check status first, then load posts and analytics
-        this.checkStatus().then(() => {
-            // Load analytics after status check
-            Analytics.loadAnalytics();
-            // Add a small delay to ensure DOM is fully ready before loading posts
-            setTimeout(() => {
-                console.log('Starting to load posts after status check...');
-                this.loadPostsWithProgress().catch(error => {
-                    console.error('Failed to load posts on init:', error);
-                });
-            }, 100);
-        }).catch(error => {
+        this.checkStatus().then(async () => {
+            // Load analytics and replied posts after status check, wait for completion
+            console.log('Loading analytics and replied posts...');
+            await Promise.all([
+                Analytics.loadAnalytics(),
+                Analytics.loadRepliedPosts(),
+                Analytics.loadFollowedAccounts()
+            ]);
+            console.log('Analytics and replied posts loaded, now loading posts...');
+            // Load posts after analytics are ready
+            this.loadPostsWithProgress().catch(error => {
+                console.error('Failed to load posts on init:', error);
+            });
+        }).catch(async (error) => {
             console.error('Status check failed, trying to load posts and analytics anyway:', error);
-            // Try to load analytics and posts even if status check fails
-            Analytics.loadAnalytics();
-            setTimeout(() => {
-                this.loadPostsWithProgress().catch(loadError => {
-                    console.error('Failed to load posts after status check failure:', loadError);
-                });
-            }, 100);
+            // Try to load analytics, replied posts, and posts even if status check fails
+            console.log('Loading analytics and replied posts after status check failure...');
+            await Promise.all([
+                Analytics.loadAnalytics(),
+                Analytics.loadRepliedPosts(),
+                Analytics.loadFollowedAccounts()
+            ]);
+            console.log('Analytics and replied posts loaded after status failure, now loading posts...');
+            this.loadPostsWithProgress().catch(loadError => {
+                console.error('Failed to load posts after status check failure:', loadError);
+            });
         });
     },
 
@@ -1204,9 +1456,22 @@ const App = {
             fetchMoreBtn.addEventListener('click', () => {
                 // For fetch more, we want to get NEW posts and append them
                 // We don't change the count, we just fetch more posts
+                console.log('🔄 Fetch more clicked - current posts:', AppState.posts.length);
                 AppState.wasFetchMore = true;
                 AppState.previousPosts = Array.isArray(AppState.posts) ? AppState.posts.slice() : [];
-                this.loadPostsWithProgress(true); // Pass true for fetchMore
+                console.log('📝 Stored previous posts:', AppState.previousPosts.length);
+                
+                // Show loading state on button
+                const originalText = fetchMoreBtn.innerHTML;
+                fetchMoreBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Fetching...';
+                fetchMoreBtn.disabled = true;
+                
+                this.loadPostsWithProgress(true).finally(() => {
+                    // Restore button state
+                    fetchMoreBtn.innerHTML = originalText;
+                    fetchMoreBtn.disabled = false;
+                    console.log('✅ Fetch more completed - total posts now:', AppState.posts.length);
+                });
             });
         }
 
@@ -1297,6 +1562,19 @@ const App = {
                     e.stopPropagation();
                     const src = e.target.getAttribute('data-src');
                     if (src) {
+                        console.log('Retrying failed image:', src);
+                        // Clear any error content
+                        e.target.innerHTML = '';
+                        e.target.style.background = '';
+                        e.target.style.border = '';
+                        e.target.style.display = '';
+                        e.target.style.alignItems = '';
+                        e.target.style.justifyContent = '';
+                        e.target.style.minHeight = '';
+                        e.target.style.color = '';
+                        e.target.style.fontSize = '';
+                        e.target.style.textAlign = '';
+                        
                         e.target.classList.remove('error');
                         e.target.classList.add('loading');
                         Utils.loadImageWithRetry(e.target, src).catch(error => {
@@ -1444,7 +1722,7 @@ const App = {
         UI.showLoading();
         
         try {
-            const streamUrl = `/api/posts/stream?count=${AppState.currentCount}&max_per_user=${AppState.maxPerUser}&fetch_more=${fetchMore}&session_id=${AppState.sessionId}`;
+            const streamUrl = `/api/posts/stream?count=${AppState.currentCount}&max_per_user=${AppState.maxPerUser}&fetch_more=${fetchMore}&session_id=${AppState.sessionId}&reply_filter_threshold=${AppState.replyFilterThreshold}&replied_post_uris=${encodeURIComponent(JSON.stringify(Array.from(AppState.repliedPostUris)))}&followed_accounts=${encodeURIComponent(JSON.stringify(Array.from(AppState.followedAccounts)))}`;
             console.log('Streaming URL:', streamUrl);
             const eventSource = new EventSource(streamUrl);
             
@@ -1463,10 +1741,12 @@ const App = {
                     
                     switch (data.type) {
                         case 'start':
+                            console.log('Stream start:', data.message);
                             UI.showProgress(data.message, 0, 0, 0, 0);
                             break;
                             
                         case 'progress':
+                            console.log('Stream progress:', data);
                             UI.showProgress(
                                 data.message, 
                                 data.progress_percent || 0, 
@@ -1492,18 +1772,17 @@ const App = {
                             console.log('Posts loaded:', data);
                             clearTimeout(connectionTimeout);
                             if (data.posts && data.posts.length > 0) {
-                                // Apply reply filter to posts
-                                const filteredPosts = App.applyReplyFilter(data.posts);
-                                console.log(`Streaming: filtered ${data.posts.length} posts to ${filteredPosts.length}`);
+                                // Posts are already filtered by the backend
+                                console.log(`Streaming: received ${data.posts.length} filtered posts from backend`);
                                 
                                 if (AppState.wasFetchMore && AppState.previousPosts.length > 0) {
                                     // Combine new + previous for state, render with collapsible
-                                    const combined = filteredPosts.concat(AppState.previousPosts);
+                                    const combined = data.posts.concat(AppState.previousPosts);
                                     AppState.posts = combined;
-                                    UI.displayNewAndPrevious(filteredPosts, AppState.previousPosts);
+                                    UI.displayNewAndPrevious(data.posts, AppState.previousPosts);
                                 } else {
-                                    UI.displayPostsProgressively(filteredPosts);
-                                    AppState.posts = filteredPosts;
+                                    UI.displayPostsProgressively(data.posts);
+                                    AppState.posts = data.posts;
                                 }
                                 // Reset fetch-more state
                                 AppState.wasFetchMore = false;
@@ -1556,27 +1835,55 @@ const App = {
         }
     },
 
-    // Apply reply filter to posts based on analytics data
+    // Apply reply filter to posts based on analytics data and replied posts
     applyReplyFilter: function(posts) {
-        // If no filter is set (threshold = 0), return all posts
+        console.log(`🔍 FILTER DEBUG: Starting filter with ${posts.length} posts`);
+        console.log(`🔍 FILTER DEBUG: Replied posts count: ${AppState.repliedPostUris.size}`);
+        console.log(`🔍 FILTER DEBUG: Reply filter threshold: ${AppState.replyFilterThreshold}`);
+
+        let filteredPosts = posts;
+
+        // First, filter out posts that have already been replied to
+        if (AppState.repliedPostUris.size > 0) {
+            const beforeCount = filteredPosts.length;
+            filteredPosts = filteredPosts.filter(post => {
+                if (!post || !post.post || !post.post.uri) {
+                    console.log('Invalid post structure, skipping replied filter for post:', post);
+                    return true; // Keep posts with invalid structure
+                }
+                
+                const postUri = post.post.uri;
+                const alreadyReplied = AppState.repliedPostUris.has(postUri);
+                
+                if (alreadyReplied) {
+                    console.log(`Filtering out already replied post: ${postUri}`);
+                }
+                
+                return !alreadyReplied;
+            });
+            console.log(`🔍 FILTER DEBUG: After replied filter: ${beforeCount} -> ${filteredPosts.length} posts`);
+        }
+
+        // Then apply the reply count threshold filter if set
         if (AppState.replyFilterThreshold === 0) {
-            return posts;
+            console.log('🔍 FILTER DEBUG: No threshold filter applied');
+            return filteredPosts;
         }
 
-        // If no analytics data, return all posts (filter can't work without data)
+        // If no analytics data, return posts after replied filter (threshold filter can't work without data)
         if (!AppState.replyAnalytics || Object.keys(AppState.replyAnalytics).length === 0) {
-            console.log('No analytics data available, cannot apply filter - returning all posts');
-            return posts;
+            console.log('No analytics data available, cannot apply threshold filter - returning posts after replied filter');
+            return filteredPosts;
         }
 
-        console.log(`🔍 FILTER DEBUG: Applying reply filter: threshold=${AppState.replyFilterThreshold}, posts=${posts.length}`);
+        console.log(`🔍 FILTER DEBUG: Applying threshold filter: threshold=${AppState.replyFilterThreshold}`);
         console.log('🔍 FILTER DEBUG: Analytics data:', AppState.replyAnalytics);
-        console.log('🔍 FILTER DEBUG: tigard-stripes count:', AppState.replyAnalytics['tigard-stripes.bsky.social']);
 
-        return posts.filter(post => {
+        const beforeThresholdCount = filteredPosts.length;
+        filteredPosts = filteredPosts.filter(post => {
             // Check if post structure is valid
             if (!post || !post.author || !post.author.handle) {
-                console.log('Invalid post structure, skipping filter for post:', post);
+                console.log('Invalid post structure, skipping threshold filter for post:', post);
                 return true; // Keep posts with invalid structure
             }
             
@@ -1586,6 +1893,15 @@ const App = {
             // Keep posts from users who have replied less than or equal to the threshold
             const shouldKeep = replyCount <= AppState.replyFilterThreshold;
             
+            // Special debugging for coolbikeart1.bsky.social
+            if (authorHandle.includes('coolbikeart1')) {
+                console.log(`🔍 SPECIAL DEBUG for ${authorHandle}:`);
+                console.log(`   - Reply count in analytics: ${replyCount}`);
+                console.log(`   - Filter threshold: ${AppState.replyFilterThreshold}`);
+                console.log(`   - Should keep: ${shouldKeep}`);
+                console.log(`   - Analytics data for this user:`, AppState.replyAnalytics[authorHandle]);
+            }
+            
             if (!shouldKeep) {
                 console.log(`Filtering out post from ${authorHandle} (${replyCount} replies > ${AppState.replyFilterThreshold})`);
             } else {
@@ -1594,20 +1910,40 @@ const App = {
             
             return shouldKeep;
         });
+        
+        console.log(`🔍 FILTER DEBUG: After threshold filter: ${beforeThresholdCount} -> ${filteredPosts.length} posts`);
+        console.log(`🔍 FILTER DEBUG: Final result: ${posts.length} -> ${filteredPosts.length} posts`);
+        
+        return filteredPosts;
     },
 
     // Load posts with filtering and refill mechanism
     async loadPostsWithFiltering(targetCount, fetchMore = false) {
         console.log(`Loading ${targetCount} posts with filtering (threshold: ${AppState.replyFilterThreshold})`);
         
+        // Show initial progress
+        UI.showProgress('Starting filtered search...', 0, 0, 0, 0);
+        
         let allPosts = [];
         let attempts = 0;
         const maxAttempts = 5; // Prevent infinite loops
         let batchSize = Math.min(Math.max(targetCount * 2, 18), 18); // Fetch in larger batches when filtering (max 18)
+        let totalChecked = 0;
         
         while (allPosts.length < targetCount && attempts < maxAttempts) {
             attempts++;
             console.log(`Fetch attempt ${attempts}: need ${targetCount - allPosts.length} more posts`);
+            
+            // Update progress
+            const progressPercent = Math.min((attempts / maxAttempts) * 100, 90);
+            UI.showProgress(
+                `Searching for posts with images (filtered)...`,
+                allPosts.length,
+                targetCount,
+                attempts,
+                maxAttempts,
+                `Found ${allPosts.length}/${targetCount} posts • Attempt ${attempts}/${maxAttempts} • Filter: ≤${AppState.replyFilterThreshold} replies`
+            );
             
             try {
                 // Fetch a batch of posts
@@ -1618,12 +1954,24 @@ const App = {
                     break;
                 }
                 
+                totalChecked += response.posts.length;
+                
                 // Apply filter to new posts
                 const filteredPosts = this.applyReplyFilter(response.posts);
                 console.log(`Filtered ${response.posts.length} posts to ${filteredPosts.length}`);
                 
                 // Add new filtered posts to our collection
                 allPosts = allPosts.concat(filteredPosts);
+                
+                // Update progress after filtering
+                UI.showProgress(
+                    `Filtering posts by reply count...`,
+                    allPosts.length,
+                    targetCount,
+                    attempts,
+                    maxAttempts,
+                    `Found ${allPosts.length}/${targetCount} posts • Checked ${totalChecked} total • Filter: ≤${AppState.replyFilterThreshold} replies`
+                );
                 
                 // If we got no new posts after filtering, we might be stuck
                 if (filteredPosts.length === 0) {
@@ -1641,6 +1989,19 @@ const App = {
         // Return only the number of posts we need
         const result = allPosts.slice(0, targetCount);
         console.log(`Final result: ${result.length} posts (requested: ${targetCount}, total fetched: ${allPosts.length})`);
+        
+        // Show final progress
+        UI.showProgress(
+            `Filtering complete!`,
+            result.length,
+            targetCount,
+            attempts,
+            maxAttempts,
+            `Found ${result.length}/${targetCount} posts • Checked ${totalChecked} total posts • Filter: ≤${AppState.replyFilterThreshold} replies`
+        );
+        
+        // Add a small delay to show the final progress message
+        await new Promise(resolve => setTimeout(resolve, 1000));
         
         return result;
     },

@@ -50,10 +50,12 @@ body {
 /* 3x Grid Layout for Square Posts */
 #posts-container {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 1.5rem;
     max-width: 1200px;
     margin: 0 auto;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 /* Top controls responsiveness */
@@ -80,6 +82,11 @@ body {
 
 .post-card {
     width: 100%;
+    max-width: 100%;
+    display: flex;
+    flex-direction: column;
+    min-width: 0; /* Allow grid item to shrink below content size */
+    overflow: hidden; /* Prevent content from overflowing grid cell */
 }
 
 #posts-container .col-lg-4,
@@ -95,6 +102,10 @@ body {
     height: 400px; /* Fixed height for consistency */
     border: 1px solid #e9ecef;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    width: 100%; /* Ensure uniform width */
+    max-width: 100%; /* Prevent overflow */
+    min-width: 0; /* Allow card to shrink below content size */
+    box-sizing: border-box; /* Include padding and border in width calculation */
 }
 
 .card-body {
@@ -169,6 +180,9 @@ body {
     align-items: center;
     justify-content: center;
     pointer-events: auto;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
 }
 
 .image-container img {
@@ -419,7 +433,7 @@ body {
 @media (min-width: 769px) and (max-width: 991px) {
     /* Tablet: 2 columns */
     #posts-container {
-        grid-template-columns: repeat(2, 1fr);
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 1.25rem;
     }
 }
@@ -428,7 +442,7 @@ body {
 @media (min-width: 992px) {
     /* Desktop: 3 columns */
     #posts-container {
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 1.5rem;
     }
 }

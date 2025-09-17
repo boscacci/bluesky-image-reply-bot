@@ -6,6 +6,8 @@ Flask Web App for Bluesky Timeline with Images
 import os
 import tempfile
 import requests
+import time
+import hashlib
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 import boto3
@@ -58,6 +60,9 @@ def init_bot():
         logger.info("Initializing Bluesky bot...")
         bluesky_bot = BlueskyBot()
         if bluesky_bot.initialize(config.BLUESKY_HANDLE):
+            # Ensure temp directory is set up
+            if not bluesky_bot.temp_dir:
+                bluesky_bot.temp_dir = bluesky_bot.setup_temp_directory()
             temp_dir = bluesky_bot.temp_dir
             logger.info("Bluesky bot initialized successfully")
             return True
@@ -73,8 +78,6 @@ def get_session_id():
     """Get a unique session ID for pagination state"""
     # In production, this should use a proper session ID from Flask session
     # For now, we'll use a combination of IP and a longer time window
-    import hashlib
-    import time
     try:
         client_ip = request.remote_addr or 'unknown'
     except RuntimeError:
@@ -434,6 +437,19 @@ def get_posts_stream():
         is_fetch_more = request.args.get('fetch_more', 'false').lower() == 'true'
         session_id_param = request.args.get('session_id', None)
         
+        # Get filtering parameters
+        reply_filter_threshold = request.args.get('reply_filter_threshold', 0, type=int)
+        replied_post_uris = request.args.get('replied_post_uris', '[]')
+        followed_accounts = request.args.get('followed_accounts', '[]')
+        try:
+            replied_post_uris = json.loads(replied_post_uris) if replied_post_uris else []
+        except:
+            replied_post_uris = []
+        try:
+            followed_accounts = json.loads(followed_accounts) if followed_accounts else []
+        except:
+            followed_accounts = []
+        
         # Validate parameters
         if target_count < 1 or target_count > 18:
             return jsonify({'error': 'Count must be between 1 and 18'}), 400
@@ -460,59 +476,73 @@ def get_posts_stream():
                 
                 if is_fetch_more:
                     # Send initial progress for fetch more
-                    yield f"data: {json.dumps({'type': 'start', 'message': f'Fetching MORE {target_count} posts with images from followed users only (pagination mode)...', 'max_fetches': max_fetches})}\n\n"
+                    yield f"data: {json.dumps({'type': 'start', 'message': f'Fetching MORE {target_count} posts with images from followed users only (filtered mode)...', 'max_fetches': max_fetches})}\n\n"
                     
-                    # Use the paginated method for fetch more
-                    result = bluesky_bot.fetch_posts_with_images_web_paginated(
+                    # Send intermediate progress update to show activity
+                    yield f"data: {json.dumps({'type': 'progress', 'message': 'Searching for new posts with images...', 'posts_found': 0, 'posts_checked': 0, 'current_batch': 1, 'progress_percent': 25})}\n\n"
+                    
+                    # Small delay to make progress visible
+                    time.sleep(0.5)
+                    
+                    # Use the streaming generator for real-time progress updates
+                    for progress_update in bluesky_bot.fetch_posts_with_images_web_stream_generator(
                         target_count=target_count,
                         max_fetches=max_fetches,
-                        max_posts_per_user=max_posts_per_user,
-                        start_cursor=pagination_state['cursor'],
-                        seen_post_uris=pagination_state['seen_posts']
-                    )
-                    
-                    # Store results for later pagination state update
-                    stream_results['cursor'] = result['cursor']
-                    stream_results['posts'] = result['posts']
+                        max_posts_per_user=max_posts_per_user
+                    ):
+                        if progress_update['type'] == 'progress':
+                            # Forward progress updates to the client
+                            yield f"data: {json.dumps(progress_update)}\n\n"
+                        elif progress_update['type'] == 'complete':
+                            # Store results for later pagination state update
+                            result = {
+                                'posts': progress_update['posts'],
+                                'cursor': progress_update.get('cursor'),
+                                'total_checked': progress_update.get('total_checked', 0),
+                                'fetch_count': progress_update.get('fetch_count', 0)
+                            }
+                            stream_results['cursor'] = result['cursor']
+                            stream_results['posts'] = result['posts']
+                            break
                     
                     # Update pagination state immediately for fetch_more
                     update_pagination_state(session_id, result['cursor'], result['posts'])
                     logger.info(f"Updated pagination state for fetch_more - session_id: {session_id}, new cursor: {result['cursor'] is not None}, new seen_posts: {len(result.get('seen_uris', set()))}")
                     
-                    # Send progress updates
-                    if len(result["posts"]) > 0:
-                        progress_message = f'Found {len(result["posts"])} new posts with images'
-                    else:
-                        progress_message = f'No new posts with images found - timeline may be exhausted'
-                    yield f"data: {json.dumps({'type': 'progress', 'message': progress_message, 'posts_found': len(result['posts']), 'posts_checked': result['total_checked'], 'current_batch': result['fetch_count'], 'progress_percent': 100})}\n\n"
-                    
-                    # Send complete with results
+                    # Send final complete message
                     yield f"data: {json.dumps({'type': 'complete', 'posts': result['posts'], 'count': len(result['posts']), 'is_fetch_more': True})}\n\n"
                     
                 else:
                     # Send initial progress for refresh
-                    yield f"data: {json.dumps({'type': 'start', 'message': f'Starting search for {target_count} posts with images from followed users only (refresh mode)...', 'max_fetches': max_fetches})}\n\n"
+                    yield f"data: {json.dumps({'type': 'start', 'message': f'Starting search for {target_count} posts with images from followed users only (filtered mode)...', 'max_fetches': max_fetches})}\n\n"
                     
                     # Reset pagination state for fresh start
                     pagination_state['cursor'] = None
                     pagination_state['seen_posts'] = set()
                     
-                    # Use the streaming method that yields progress updates
+                    # Use the streaming generator for real-time progress updates
                     for progress_update in bluesky_bot.fetch_posts_with_images_web_stream_generator(
-                        target_count,
+                        target_count=target_count,
                         max_fetches=max_fetches,
                         max_posts_per_user=max_posts_per_user
                     ):
-                        if progress_update['type'] in ['progress', 'keepalive']:
+                        if progress_update['type'] == 'progress':
+                            # Forward progress updates to the client
                             yield f"data: {json.dumps(progress_update)}\n\n"
                         elif progress_update['type'] == 'complete':
                             # Store results for later pagination state update
-                            if progress_update.get('posts'):
-                                stream_results['posts'] = progress_update['posts']
-                                # Update pagination state immediately for regular refresh
-                                update_pagination_state(session_id, progress_update.get('cursor'), progress_update['posts'])
-                            yield f"data: {json.dumps(progress_update)}\n\n"
+                            result = {
+                                'posts': progress_update['posts'],
+                                'cursor': progress_update.get('cursor'),
+                                'total_checked': progress_update.get('total_checked', 0),
+                                'fetch_count': progress_update.get('fetch_count', 0)
+                            }
+                            stream_results['cursor'] = result['cursor']
+                            stream_results['posts'] = result['posts']
                             break
+                    
+                    # Send final complete message
+                    yield f"data: {json.dumps({'type': 'complete', 'posts': result['posts'], 'count': len(result['posts']), 'is_fetch_more': False})}\n\n"
                 
             except Exception as e:
                 logger.error(f"Error in stream: {e}")
@@ -760,6 +790,49 @@ def get_reply_analytics_endpoint():
     except Exception as e:
         logger.error(f"Error in get_reply_analytics_endpoint: {e}")
         return jsonify({'error': f'Failed to get reply analytics: {str(e)}'}), 500
+
+
+@app.route('/api/replied-posts')
+def get_replied_posts_endpoint():
+    """API endpoint to get list of post URIs that have been replied to"""
+    try:
+        if not init_bot():
+            logger.error("Failed to initialize Bluesky bot")
+            return jsonify({'error': 'Failed to initialize Bluesky bot. Please check your credentials and try again.'}), 500
+        
+        # Get the list of replied post URIs
+        replied_posts = bluesky_bot.get_replied_post_uris()
+        
+        return jsonify({
+            'success': True,
+            'replied_post_uris': replied_posts,
+            'count': len(replied_posts)
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in get_replied_posts_endpoint: {e}")
+        return jsonify({'error': f'Failed to get replied posts: {str(e)}'}), 500
+
+@app.route('/api/followed-accounts')
+def get_followed_accounts_endpoint():
+    """API endpoint to get list of account handles that the user follows"""
+    try:
+        if not init_bot():
+            logger.error("Failed to initialize Bluesky bot")
+            return jsonify({'error': 'Failed to initialize Bluesky bot. Please check your credentials and try again.'}), 500
+        
+        # Get the list of followed accounts
+        followed_accounts = bluesky_bot.get_followed_accounts()
+        
+        return jsonify({
+            'success': True,
+            'followed_accounts': followed_accounts,
+            'count': len(followed_accounts)
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in get_followed_accounts_endpoint: {e}")
+        return jsonify({'error': f'Failed to get followed accounts: {str(e)}'}), 500
 
 
 @app.route('/health')
