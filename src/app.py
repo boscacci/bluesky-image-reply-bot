@@ -685,6 +685,83 @@ def generate_ai_reply_endpoint():
         return jsonify({'error': f'Failed to generate AI reply: {str(e)}'}), 500
 
 
+@app.route('/api/post-reply', methods=['POST'])
+def post_reply_endpoint():
+    """API endpoint to post a reply to a Bluesky post"""
+    try:
+        if not init_bot():
+            logger.error("Failed to initialize Bluesky bot")
+            return jsonify({'error': 'Failed to initialize Bluesky bot. Please check your credentials and try again.'}), 500
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+        
+        post_uri = data.get('post_uri')
+        reply_text = data.get('reply_text')
+        
+        if not post_uri:
+            return jsonify({'error': 'post_uri is required'}), 400
+        
+        if not reply_text:
+            return jsonify({'error': 'reply_text is required'}), 400
+        
+        if len(reply_text.strip()) == 0:
+            return jsonify({'error': 'reply_text cannot be empty'}), 400
+        
+        # Post the reply
+        result = bluesky_bot.post_reply(post_uri, reply_text)
+        
+        if result['success']:
+            return jsonify({
+                'success': True,
+                'message': result['message'],
+                'reply_uri': result['reply_uri'],
+                'post_uri': result['post_uri']
+            })
+        else:
+            return jsonify({'error': result['error']}), 500
+        
+    except Exception as e:
+        logger.error(f"Error in post_reply_endpoint: {e}")
+        return jsonify({'error': f'Failed to post reply: {str(e)}'}), 500
+
+
+@app.route('/api/reply-analytics')
+def get_reply_analytics_endpoint():
+    """API endpoint to get reply analytics for the last N days"""
+    try:
+        if not init_bot():
+            logger.error("Failed to initialize Bluesky bot")
+            return jsonify({'error': 'Failed to initialize Bluesky bot. Please check your credentials and try again.'}), 500
+        
+        days = request.args.get('days', 3, type=int)
+        limit = request.args.get('limit', 5, type=int)
+        
+        # Validate parameters
+        if days < 1 or days > 30:
+            return jsonify({'error': 'Days must be between 1 and 30'}), 400
+        if limit < 1 or limit > 20:
+            return jsonify({'error': 'Limit must be between 1 and 20'}), 400
+        
+        # Get analytics
+        result = bluesky_bot.get_reply_analytics(days, limit)
+        
+        if result['success']:
+            return jsonify({
+                'success': True,
+                'replies_per_user': result['replies_per_user'],
+                'total_replies': result['total_replies'],
+                'days_analyzed': result['days_analyzed']
+            })
+        else:
+            return jsonify({'error': result['error']}), 500
+        
+    except Exception as e:
+        logger.error(f"Error in get_reply_analytics_endpoint: {e}")
+        return jsonify({'error': f'Failed to get reply analytics: {str(e)}'}), 500
+
+
 @app.route('/health')
 def health_check():
     """Health check endpoint for monitoring"""

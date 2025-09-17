@@ -1118,3 +1118,118 @@ kbd {
     border-left-color: #20c997;
     color: #e2e8f0;
 }
+
+/* Analytics Sidebar Styles */
+.analytics-sidebar {
+    position: sticky;
+    top: 20px;
+    height: fit-content;
+}
+
+.analytics-sidebar .card {
+    border: 1px solid #dee2e6;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    height: auto !important;
+    display: block !important;
+    flex-direction: unset !important;
+}
+
+.analytics-sidebar .card-header {
+    background-color: #f8f9fa;
+    border-bottom: 1px solid #dee2e6;
+    padding: 0.75rem 1rem;
+}
+
+.analytics-sidebar .card-body {
+    padding: 0.75rem;
+    max-height: 300px;
+    overflow-y: auto;
+    flex: unset !important;
+    display: block !important;
+    /* Custom scrollbar styling */
+    scrollbar-width: thin;
+    scrollbar-color: #6c757d #f8f9fa;
+}
+
+/* Reply filter card should fit content */
+.analytics-sidebar .card:last-child .card-body {
+    max-height: none;
+    overflow-y: visible;
+}
+
+.analytics-sidebar .card-body::-webkit-scrollbar {
+    width: 6px;
+}
+
+.analytics-sidebar .card-body::-webkit-scrollbar-track {
+    background: #f8f9fa;
+    border-radius: 3px;
+}
+
+.analytics-sidebar .card-body::-webkit-scrollbar-thumb {
+    background: #6c757d;
+    border-radius: 3px;
+}
+
+.analytics-sidebar .card-body::-webkit-scrollbar-thumb:hover {
+    background: #495057;
+}
+
+/* Make analytics items more compact and better styled */
+.analytics-bar-item {
+    margin-bottom: 0.5rem !important;
+    padding: 0.25rem 0;
+}
+
+.analytics-bar-item .d-flex {
+    margin-bottom: 0.25rem !important;
+}
+
+.analytics-bar-item small {
+    font-size: 0.8rem;
+    font-weight: 500;
+}
+
+.analytics-bar-item .progress {
+    height: 4px !important;
+    background-color: #e9ecef;
+    border-radius: 2px;
+}
+
+.analytics-bar-item .progress-bar {
+    border-radius: 2px;
+    transition: width 0.3s ease;
+}
+
+.analytics-chart {
+    font-size: 0.85rem;
+}
+
+.analytics-bar-item .progress-bar {
+    border-radius: 4px;
+    transition: width 0.3s ease;
+}
+
+/* Dark theme support for analytics */
+[data-bs-theme="dark"] .analytics-sidebar .card {
+    background-color: #212529;
+    border-color: #495057;
+}
+
+[data-bs-theme="dark"] .analytics-sidebar .card-header {
+    background-color: #343a40;
+    border-bottom-color: #495057;
+    color: #e9ecef;
+}
+
+[data-bs-theme="dark"] .analytics-bar-item .progress {
+    background-color: #495057;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .analytics-sidebar {
+        position: static;
+        margin-bottom: 1rem;
+    }
+}

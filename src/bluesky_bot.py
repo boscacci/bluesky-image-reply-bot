@@ -748,6 +748,214 @@ URI: {post.post.uri}
                 "post_uri": post_uri
             }
     
+    def post_reply(self, post_uri: str, reply_text: str) -> Dict[str, Any]:
+        """Post a reply to a Bluesky post"""
+        try:
+            if not self.client:
+                raise Exception("Not authenticated")
+            
+            # Check rate limits before making API calls
+            if not self._check_rate_limit():
+                return {
+                    "success": False,
+                    "error": "Rate limit exceeded. Please try again later."
+                }
+            
+            # Parse the post URI to get the root post info
+            # Format: at://did:plc:xxx/app.bsky.feed.post/rkey
+            uri_parts = post_uri.split('/')
+            if len(uri_parts) < 5 or uri_parts[3] != 'app.bsky.feed.post':
+                raise Exception(f"Invalid post URI format: {post_uri}")
+            
+            repo_did = uri_parts[2]
+            record_key = uri_parts[4]
+            
+            # Get the root post record to build the reply structure
+            root_post_record = self.client.com.atproto.repo.get_record(
+                params={
+                    "repo": repo_did,
+                    "collection": "app.bsky.feed.post",
+                    "rkey": record_key
+                }
+            )
+            
+            # Build the reply record
+            reply_record = {
+                "text": reply_text,
+                "reply": {
+                    "root": {
+                        "uri": post_uri,
+                        "cid": root_post_record.cid
+                    },
+                    "parent": {
+                        "uri": post_uri,
+                        "cid": root_post_record.cid
+                    }
+                },
+                "createdAt": datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+            }
+            
+            # Post the reply
+            response = self.client.com.atproto.repo.create_record(
+                data={
+                    "repo": self.client.me.did,
+                    "collection": "app.bsky.feed.post",
+                    "record": reply_record
+                }
+            )
+            
+            logger.info(f"Successfully posted reply to {post_uri}: {response.uri}")
+            
+            # Store the reply for analytics tracking
+            self._store_reply_for_analytics(post_uri, reply_text, response.uri)
+            
+            return {
+                "success": True,
+                "reply_uri": response.uri,
+                "message": "Reply posted successfully",
+                "post_uri": post_uri
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to post reply to {post_uri}: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "post_uri": post_uri
+            }
+    
+    def _store_reply_for_analytics(self, post_uri: str, reply_text: str, reply_uri: str):
+        """Store reply data for analytics tracking"""
+        try:
+            # Create a simple JSON file to track replies
+            replies_file = os.path.join(os.path.dirname(__file__), '..', 'replies_tracking.json')
+            
+            # Load existing replies
+            replies_data = []
+            if os.path.exists(replies_file):
+                with open(replies_file, 'r', encoding='utf-8') as f:
+                    replies_data = json.load(f)
+            
+            # Add new reply
+            reply_entry = {
+                "post_uri": post_uri,
+                "reply_text": reply_text,
+                "reply_uri": reply_uri,
+                "timestamp": datetime.now().isoformat(),
+                "author_handle": self.client.me.handle if self.client and hasattr(self.client, 'me') else "unknown"
+            }
+            
+            replies_data.append(reply_entry)
+            
+            # Keep only last 30 days of replies to prevent file from growing too large
+            cutoff_date = datetime.now() - timedelta(days=30)
+            replies_data = [
+                reply for reply in replies_data 
+                if datetime.fromisoformat(reply['timestamp']) > cutoff_date
+            ]
+            
+            # Save back to file
+            with open(replies_file, 'w', encoding='utf-8') as f:
+                json.dump(replies_data, f, indent=2, ensure_ascii=False)
+                
+        except Exception as e:
+            logger.warning(f"Failed to store reply for analytics: {e}")
+    
+    def get_reply_analytics(self, days: int = 3, limit: int = 5) -> Dict[str, Any]:
+        """Get analytics about replies posted in the last N days by fetching from Bluesky"""
+        try:
+            if not self.client:
+                raise Exception("Not authenticated")
+            
+            # Calculate cutoff date (make it timezone-aware)
+            cutoff_date = datetime.now().replace(tzinfo=None) - timedelta(days=days)
+            
+            # Fetch user's posts (including replies) from their timeline
+            replies_per_user = {}
+            total_replies = 0
+            cursor = None
+            
+            # Fetch posts in batches to find replies
+            for batch in range(10):  # Limit to 10 batches to avoid infinite loops
+                try:
+                    # Get user's posts from their timeline
+                    timeline_response = self.client.get_author_feed(
+                        actor=self.client.me.did,
+                        limit=100,
+                        cursor=cursor
+                    )
+                    
+                    if not timeline_response or not hasattr(timeline_response, 'feed'):
+                        break
+                    
+                    # Process posts in this batch
+                    for post_view in timeline_response.feed:
+                        post = post_view.post
+                        
+                        # Check if this is a reply (has reply context)
+                        if hasattr(post.record, 'reply') and post.record.reply:
+                            # Check if this reply is within our time window
+                            post_date = datetime.fromisoformat(post.indexed_at.replace('Z', '+00:00')).replace(tzinfo=None)
+                            if post_date > cutoff_date:
+                                total_replies += 1
+                                
+                                # Get the parent post to find who we replied to
+                                try:
+                                    parent_uri = post.record.reply.parent.uri
+                                    # Extract author DID from parent URI
+                                    # Format: at://did:plc:xxx/app.bsky.feed.post/rkey
+                                    uri_parts = parent_uri.split('/')
+                                    if len(uri_parts) >= 3:
+                                        parent_author_did = uri_parts[2]  # DID is at index 2
+                                        
+                                        # Try to resolve DID to handle
+                                        try:
+                                            # Get profile info for the parent author
+                                            profile_response = self.client.get_profile(actor=parent_author_did)
+                                            if profile_response and hasattr(profile_response, 'handle'):
+                                                author_handle = profile_response.handle
+                                            else:
+                                                # Fallback to truncated DID
+                                                author_handle = parent_author_did[:20] + "..."
+                                        except:
+                                            # Fallback to truncated DID if profile lookup fails
+                                            author_handle = parent_author_did[:20] + "..."
+                                        
+                                        if author_handle not in replies_per_user:
+                                            replies_per_user[author_handle] = 0
+                                        replies_per_user[author_handle] += 1
+                                        
+                                except Exception as e:
+                                    logger.warning(f"Failed to parse parent URI {parent_uri}: {e}")
+                                    continue
+                    
+                    # Check if we have more posts to fetch
+                    if hasattr(timeline_response, 'cursor') and timeline_response.cursor:
+                        cursor = timeline_response.cursor
+                    else:
+                        break
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to fetch timeline batch {batch}: {e}")
+                    break
+            
+            # Sort by reply count (highest to lowest) and get top N
+            sorted_users = sorted(replies_per_user.items(), key=lambda x: x[1], reverse=True)[:limit]
+            
+            return {
+                "success": True,
+                "replies_per_user": dict(sorted_users),
+                "total_replies": total_replies,
+                "days_analyzed": days
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get reply analytics: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
     def fetch_posts_with_images_web_paginated(self, target_count: int = 5, max_fetches: int = 20, max_posts_per_user: int = 2, start_cursor: Optional[str] = None, seen_post_uris: Optional[set] = None) -> Dict[str, Any]:
         """Fetch posts with images with pagination support - returns new posts and pagination info"""
         import time

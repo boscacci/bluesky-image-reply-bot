@@ -6,11 +6,13 @@ const AppState = {
     isLoading: false,
     currentCount: parseInt(localStorage.getItem('postCount') || '9'),
     maxPerUser: parseInt(localStorage.getItem('maxPerUser') || '1'),
+    replyFilterThreshold: parseInt(localStorage.getItem('replyFilterThreshold') || '0'),
     lastRefresh: null,
     carouselIndex: {},
     previousPosts: [],
     wasFetchMore: false,
-    sessionId: localStorage.getItem('sessionId') || generateSessionId()
+    sessionId: localStorage.getItem('sessionId') || generateSessionId(),
+    replyAnalytics: null  // Store analytics data for filtering
 };
 
 // Generate a unique session ID
@@ -163,6 +165,20 @@ const ApiService = {
 
     getImageUrl(filename) {
         return `/api/image/${filename}`;
+    },
+
+    async postReply(postUri, replyText) {
+        return this.request('/api/post-reply', {
+            method: 'POST',
+            body: JSON.stringify({
+                post_uri: postUri,
+                reply_text: replyText
+            })
+        });
+    },
+
+    async getReplyAnalytics(days = 7, limit = 5) {
+        return this.request(`/api/reply-analytics?days=${days}&limit=${limit}`);
     },
 
     async likePost(postUri) {
@@ -562,6 +578,9 @@ const UI = {
             wrapper.innerHTML = this.createPostCard(post, idx);
             postsContainer.appendChild(wrapper);
             
+            // Initialize image loading for this post
+            this.initializeImageLoadingForPost(wrapper);
+            
             // Add click event listener to like button for this post
             const likeButton = wrapper.querySelector('.like-button');
             if (likeButton) {
@@ -611,6 +630,9 @@ const UI = {
             // Indexes for previous posts should not clash with new posts; offset by newPosts length
             wrapper.innerHTML = this.createPostCard(post, newPosts.length + idx);
             prevPostsGrid.appendChild(wrapper);
+            
+            // Initialize image loading for this post
+            this.initializeImageLoadingForPost(wrapper);
             
             // Add click event listener to like button for this post
             const likeButton = wrapper.querySelector('.like-button');
@@ -856,6 +878,9 @@ const UI = {
                             <button type="button" class="btn btn-success" onclick="UI.copyAiReply()">
                                 <i class="fas fa-copy"></i> Copy Reply
                             </button>
+                            <button type="button" class="btn btn-primary" id="postReplyBtn" onclick="UI.postAiReply()">
+                                <i class="fas fa-paper-plane"></i> Post Reply
+                            </button>
                             <a href="#" target="_blank" rel="noopener" class="btn btn-outline-primary" id="modalViewLink">
                                 <i class="fas fa-external-link-alt"></i> View on Bluesky
                             </a>
@@ -950,6 +975,167 @@ const UI = {
         });
     },
 
+    // Post AI reply to Bluesky
+    postAiReply: async function() {
+        const modal = document.getElementById('aiReplyModal');
+        if (!modal) return;
+        
+        const postIndexAttr = modal.getAttribute('data-post-index');
+        const postIndex = postIndexAttr ? parseInt(postIndexAttr, 10) : NaN;
+        if (Number.isNaN(postIndex)) return;
+        
+        const post = AppState.posts[postIndex];
+        if (!post) {
+            console.error('Post not found for index:', postIndex);
+            return;
+        }
+        
+        const replyText = document.getElementById('aiReplyText').textContent;
+        if (!replyText || replyText.trim().length === 0) {
+            this.showError('No reply text to post');
+            return;
+        }
+        
+        const postReplyBtn = document.getElementById('postReplyBtn');
+        if (!postReplyBtn) return;
+        
+        // Show loading state
+        const originalContent = postReplyBtn.innerHTML;
+        postReplyBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Posting...';
+        postReplyBtn.disabled = true;
+        
+        try {
+            console.log('🔍 POST REPLY DEBUG: Post object:', post);
+            console.log('🔍 POST REPLY DEBUG: Post URI:', post.uri || post.post?.uri);
+            const postUri = post.uri || post.post?.uri;
+            if (!postUri) {
+                throw new Error('No post URI found in post object');
+            }
+            const response = await ApiService.postReply(postUri, replyText);
+            
+            if (response.success) {
+                this.showSuccess('Reply posted successfully!');
+                // Refresh analytics
+                Analytics.loadAnalytics();
+                // Close the modal
+                const bsModal = bootstrap.Modal.getInstance(modal);
+                if (bsModal) bsModal.hide();
+            } else {
+                this.showError('Failed to post reply: ' + (response.error || 'Unknown error'));
+            }
+        } catch (error) {
+            console.error('Error posting reply:', error);
+            this.showError('Failed to post reply: ' + error.message);
+        } finally {
+            // Restore button state
+            postReplyBtn.innerHTML = originalContent;
+            postReplyBtn.disabled = false;
+        }
+    },
+
+};
+
+// Analytics component
+const Analytics = {
+    // Load and display reply analytics
+    loadAnalytics: async function() {
+        try {
+            console.log('Loading analytics...');
+            // Load all data (up to 20) to show in scrollable sidebar
+            const response = await ApiService.getReplyAnalytics(7, 20);
+            console.log('Analytics response:', response);
+            
+            if (response.success) {
+                console.log('Displaying analytics chart with data:', response.replies_per_user);
+                // Store analytics data in AppState for filtering
+                AppState.replyAnalytics = response.replies_per_user;
+                this.displayAnalyticsChart(response.replies_per_user, response.total_replies);
+                // Update input max value based on actual data
+                App.updateReplyFilterInputMax();
+            } else {
+                console.error('Analytics API returned error:', response.error);
+                this.showAnalyticsError(response.error || 'Failed to load analytics');
+            }
+        } catch (error) {
+            console.error('Error loading analytics:', error);
+            this.showAnalyticsError('Failed to load analytics: ' + error.message);
+        }
+    },
+    
+    // Display analytics as a simple bar chart
+    displayAnalyticsChart: function(repliesPerUser, totalReplies) {
+        console.log('displayAnalyticsChart called with:', { repliesPerUser, totalReplies });
+        const container = document.getElementById('analytics-chart-container');
+        if (!container) {
+            console.error('analytics-chart-container not found!');
+            return;
+        }
+        
+        if (Object.keys(repliesPerUser).length === 0) {
+            console.log('No replies data, showing empty state');
+            container.innerHTML = `
+                <div class="text-center text-muted">
+                    <i class="fas fa-chart-bar mb-2"></i>
+                    <br>No replies yet
+                    <br><small>Start replying to see analytics!</small>
+                </div>
+            `;
+            return;
+        }
+        
+        // Sort all users by count (highest to lowest) - show all in scrollable area
+        const sortedUsers = Object.entries(repliesPerUser)
+            .sort((a, b) => b[1] - a[1]);  // Sort by count (highest to lowest)
+        
+        // Create a simple HTML bar chart
+        const maxReplies = Math.max(...Object.values(repliesPerUser));
+        const chartHtml = sortedUsers
+            .map(([user, count]) => {
+                const percentage = maxReplies > 0 ? (count / maxReplies) * 100 : 0;
+                return `
+                    <div class="analytics-bar-item mb-2">
+                        <div class="d-flex justify-content-between align-items-center mb-1">
+                            <small class="text-truncate" style="max-width: 120px;" title="${user}">${user}</small>
+                            <small class="text-muted">${count}</small>
+                        </div>
+                        <div class="progress" style="height: 8px;">
+                            <div class="progress-bar bg-primary" role="progressbar" 
+                                 style="width: ${percentage}%" 
+                                 aria-valuenow="${count}" 
+                                 aria-valuemin="0" 
+                                 aria-valuemax="${maxReplies}">
+                            </div>
+                        </div>
+                    </div>
+                `;
+            })
+            .join('');
+        
+        container.innerHTML = `
+            <div class="analytics-chart">
+                <div class="mb-2">
+                    <small class="text-muted">
+                        <i class="fas fa-reply me-1"></i>
+                        ${totalReplies} total replies
+                    </small>
+                </div>
+                ${chartHtml}
+            </div>
+        `;
+    },
+    
+    // Show analytics error
+    showAnalyticsError: function(message) {
+        const container = document.getElementById('analytics-chart-container');
+        if (!container) return;
+        
+        container.innerHTML = `
+            <div class="text-center text-danger">
+                <i class="fas fa-exclamation-triangle mb-2"></i>
+                <br><small>${message}</small>
+            </div>
+        `;
+    }
 };
 
 // Main app controller
@@ -977,10 +1163,15 @@ const App = {
             }
         }
         this.setupEventListeners();
+        // Update filter indicator and display based on saved state
+        this.updateFilterIndicator();
+        this.updateReplyFilterDisplay();
         // Load user info, posts, and check status
         this.loadUserInfo();
-        // Check status first, then load posts
+        // Check status first, then load posts and analytics
         this.checkStatus().then(() => {
+            // Load analytics after status check
+            Analytics.loadAnalytics();
             // Add a small delay to ensure DOM is fully ready before loading posts
             setTimeout(() => {
                 console.log('Starting to load posts after status check...');
@@ -989,8 +1180,9 @@ const App = {
                 });
             }, 100);
         }).catch(error => {
-            console.error('Status check failed, trying to load posts anyway:', error);
-            // Try to load posts even if status check fails
+            console.error('Status check failed, trying to load posts and analytics anyway:', error);
+            // Try to load analytics and posts even if status check fails
+            Analytics.loadAnalytics();
             setTimeout(() => {
                 this.loadPostsWithProgress().catch(loadError => {
                     console.error('Failed to load posts after status check failure:', loadError);
@@ -1050,6 +1242,34 @@ const App = {
                 }
             });
         });
+
+        // Reply filter number input
+        const replyFilterInput = document.getElementById('replyFilterInput');
+        if (replyFilterInput) {
+            // Initialize input value from saved state
+            replyFilterInput.value = AppState.replyFilterThreshold;
+            this.updateReplyFilterDisplay();
+
+            replyFilterInput.addEventListener('input', (e) => {
+                const value = parseInt(e.target.value) || 0;
+                AppState.replyFilterThreshold = Math.max(0, Math.min(20, value)); // Clamp between 0-20
+                e.target.value = AppState.replyFilterThreshold; // Update input if clamped
+                localStorage.setItem('replyFilterThreshold', String(AppState.replyFilterThreshold));
+                this.updateReplyFilterDisplay();
+                this.updateFilterIndicator();
+                this.loadPostsWithProgress();
+            });
+
+            // Also handle blur event to ensure value is set even if user types and clicks away
+            replyFilterInput.addEventListener('blur', (e) => {
+                const value = parseInt(e.target.value) || 0;
+                AppState.replyFilterThreshold = Math.max(0, Math.min(20, value));
+                e.target.value = AppState.replyFilterThreshold;
+                localStorage.setItem('replyFilterThreshold', String(AppState.replyFilterThreshold));
+                this.updateReplyFilterDisplay();
+                this.updateFilterIndicator();
+            });
+        }
 
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => {
@@ -1180,7 +1400,47 @@ const App = {
             return;
         }
 
-        console.log('Loading posts with progress...', { count: AppState.currentCount, fetchMore, maxPerUser: AppState.maxPerUser, sessionId: AppState.sessionId });
+        console.log('Loading posts with progress...', { count: AppState.currentCount, fetchMore, maxPerUser: AppState.maxPerUser, sessionId: AppState.sessionId, replyFilter: AppState.replyFilterThreshold });
+        console.log('Analytics data check:', { 
+            hasAnalytics: !!AppState.replyAnalytics, 
+            analyticsKeys: AppState.replyAnalytics ? Object.keys(AppState.replyAnalytics).length : 0,
+            analyticsData: AppState.replyAnalytics 
+        });
+        
+        // If filtering is enabled, use the filtering mechanism instead of streaming
+        if (AppState.replyFilterThreshold > 0 && AppState.replyAnalytics && Object.keys(AppState.replyAnalytics).length > 0) {
+            console.log('Using filtering mechanism due to active reply filter');
+            console.log('Analytics data available:', Object.keys(AppState.replyAnalytics).length, 'users');
+            UI.showLoading();
+            try {
+                const filteredPosts = await this.loadPostsWithFiltering(AppState.currentCount, fetchMore);
+                
+                if (filteredPosts.length > 0) {
+                    if (AppState.wasFetchMore && AppState.previousPosts.length > 0) {
+                        const combined = filteredPosts.concat(AppState.previousPosts);
+                        AppState.posts = combined;
+                        UI.displayNewAndPrevious(filteredPosts, AppState.previousPosts);
+                    } else {
+                        UI.displayPostsProgressively(filteredPosts);
+                        AppState.posts = filteredPosts;
+                    }
+                    AppState.lastRefresh = new Date();
+                    UI.hideError();
+                } else {
+                    console.log('No posts found after filtering');
+                    UI.displayPosts([]);
+                }
+            } catch (error) {
+                console.error('Error loading posts with filtering:', error);
+                UI.showError('Failed to load posts: ' + error.message);
+            } finally {
+                UI.hideLoading();
+                AppState.wasFetchMore = false;
+                AppState.previousPosts = [];
+            }
+            return;
+        }
+        
         UI.showLoading();
         
         try {
@@ -1232,14 +1492,18 @@ const App = {
                             console.log('Posts loaded:', data);
                             clearTimeout(connectionTimeout);
                             if (data.posts && data.posts.length > 0) {
+                                // Apply reply filter to posts
+                                const filteredPosts = App.applyReplyFilter(data.posts);
+                                console.log(`Streaming: filtered ${data.posts.length} posts to ${filteredPosts.length}`);
+                                
                                 if (AppState.wasFetchMore && AppState.previousPosts.length > 0) {
                                     // Combine new + previous for state, render with collapsible
-                                    const combined = data.posts.concat(AppState.previousPosts);
+                                    const combined = filteredPosts.concat(AppState.previousPosts);
                                     AppState.posts = combined;
-                                    UI.displayNewAndPrevious(data.posts, AppState.previousPosts);
+                                    UI.displayNewAndPrevious(filteredPosts, AppState.previousPosts);
                                 } else {
-                                    UI.displayPostsProgressively(data.posts);
-                                    AppState.posts = data.posts;
+                                    UI.displayPostsProgressively(filteredPosts);
+                                    AppState.posts = filteredPosts;
                                 }
                                 // Reset fetch-more state
                                 AppState.wasFetchMore = false;
@@ -1289,6 +1553,131 @@ const App = {
                 console.error('Fallback also failed:', fallbackError);
                 UI.showError('Failed to load posts: ' + fallbackError.message);
             });
+        }
+    },
+
+    // Apply reply filter to posts based on analytics data
+    applyReplyFilter: function(posts) {
+        // If no filter is set (threshold = 0), return all posts
+        if (AppState.replyFilterThreshold === 0) {
+            return posts;
+        }
+
+        // If no analytics data, return all posts (filter can't work without data)
+        if (!AppState.replyAnalytics || Object.keys(AppState.replyAnalytics).length === 0) {
+            console.log('No analytics data available, cannot apply filter - returning all posts');
+            return posts;
+        }
+
+        console.log(`🔍 FILTER DEBUG: Applying reply filter: threshold=${AppState.replyFilterThreshold}, posts=${posts.length}`);
+        console.log('🔍 FILTER DEBUG: Analytics data:', AppState.replyAnalytics);
+        console.log('🔍 FILTER DEBUG: tigard-stripes count:', AppState.replyAnalytics['tigard-stripes.bsky.social']);
+
+        return posts.filter(post => {
+            // Check if post structure is valid
+            if (!post || !post.author || !post.author.handle) {
+                console.log('Invalid post structure, skipping filter for post:', post);
+                return true; // Keep posts with invalid structure
+            }
+            
+            const authorHandle = post.author.handle;
+            const replyCount = AppState.replyAnalytics[authorHandle] || 0;
+            
+            // Keep posts from users who have replied less than or equal to the threshold
+            const shouldKeep = replyCount <= AppState.replyFilterThreshold;
+            
+            if (!shouldKeep) {
+                console.log(`Filtering out post from ${authorHandle} (${replyCount} replies > ${AppState.replyFilterThreshold})`);
+            } else {
+                console.log(`Keeping post from ${authorHandle} (${replyCount} replies <= ${AppState.replyFilterThreshold})`);
+            }
+            
+            return shouldKeep;
+        });
+    },
+
+    // Load posts with filtering and refill mechanism
+    async loadPostsWithFiltering(targetCount, fetchMore = false) {
+        console.log(`Loading ${targetCount} posts with filtering (threshold: ${AppState.replyFilterThreshold})`);
+        
+        let allPosts = [];
+        let attempts = 0;
+        const maxAttempts = 5; // Prevent infinite loops
+        let batchSize = Math.min(Math.max(targetCount * 2, 18), 18); // Fetch in larger batches when filtering (max 18)
+        
+        while (allPosts.length < targetCount && attempts < maxAttempts) {
+            attempts++;
+            console.log(`Fetch attempt ${attempts}: need ${targetCount - allPosts.length} more posts`);
+            
+            try {
+                // Fetch a batch of posts
+                const response = await ApiService.getPosts(batchSize, fetchMore, AppState.maxPerUser, AppState.sessionId);
+                
+                if (!response.posts || response.posts.length === 0) {
+                    console.log('No more posts available');
+                    break;
+                }
+                
+                // Apply filter to new posts
+                const filteredPosts = this.applyReplyFilter(response.posts);
+                console.log(`Filtered ${response.posts.length} posts to ${filteredPosts.length}`);
+                
+                // Add new filtered posts to our collection
+                allPosts = allPosts.concat(filteredPosts);
+                
+                // If we got no new posts after filtering, we might be stuck
+                if (filteredPosts.length === 0) {
+                    console.log('No posts passed filter, trying larger batch...');
+                    // Try with a larger batch size for the next attempt (but don't exceed API limit)
+                    batchSize = Math.min(batchSize * 2, 18);
+                }
+                
+            } catch (error) {
+                console.error(`Error in fetch attempt ${attempts}:`, error);
+                break;
+            }
+        }
+        
+        // Return only the number of posts we need
+        const result = allPosts.slice(0, targetCount);
+        console.log(`Final result: ${result.length} posts (requested: ${targetCount}, total fetched: ${allPosts.length})`);
+        
+        return result;
+    },
+
+    // Update the filter indicator visibility
+    updateFilterIndicator: function() {
+        const filterIndicator = document.getElementById('filter-indicator');
+        if (filterIndicator) {
+            if (AppState.replyFilterThreshold > 0) {
+                filterIndicator.style.display = 'flex';
+                filterIndicator.innerHTML = `<i class="fas fa-filter me-1"></i> Reply Filter: ≤${AppState.replyFilterThreshold}`;
+            } else {
+                filterIndicator.style.display = 'none';
+            }
+        }
+    },
+
+    // Update the reply filter display (slider badge)
+    updateReplyFilterDisplay: function() {
+        const replyFilterValue = document.getElementById('replyFilterValue');
+        if (replyFilterValue) {
+            if (AppState.replyFilterThreshold === 0) {
+                replyFilterValue.textContent = 'All';
+                replyFilterValue.className = 'badge bg-success ms-2';
+            } else {
+                replyFilterValue.textContent = `≤${AppState.replyFilterThreshold}`;
+                replyFilterValue.className = 'badge bg-success ms-2';
+            }
+        }
+    },
+
+    // Update input max value based on analytics data
+    updateReplyFilterInputMax: function() {
+        const replyFilterInput = document.getElementById('replyFilterInput');
+        if (replyFilterInput && AppState.replyAnalytics) {
+            const maxReplies = Math.max(...Object.values(AppState.replyAnalytics));
+            replyFilterInput.max = Math.max(maxReplies, 5); // At least 5, or the actual max
         }
     }
 };
